@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]
 
@@ -13,14 +14,17 @@ PROCESSED_DIR = DATA_DIR / "processed"
 PRICES_RAW_DIR = RAW_DIR / "prices"
 SEC_RAW_DIR = RAW_DIR / "sec"
 
-SEC_USER_AGENT = "YourName yourmail@domain.com"
-# SEC_USER_AGENT = "Chinonso Osuji your.email@domain.com"
+PRICES_DB_PATH = DATA_DIR / "prices_us.db"
+SEC_DB_PATH = DATA_DIR / "sec_us.db"
+
+#For SEC endpoints, you should replace that with a real contact string you control. Otherwise you will eventually hit rate limits or blocks.
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "YourName yourmail@domain.com") 
 
 SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_HEADERS_BASE = {
     "User-Agent": SEC_USER_AGENT,
+    "Accept": "application/json,text/plain,*/*",
     "Accept-Encoding": "gzip, deflate",
-    # "Host": "www.sec.gov",
 }
 
 SEC_MAP_DIR = RAW_DIR / "sec"

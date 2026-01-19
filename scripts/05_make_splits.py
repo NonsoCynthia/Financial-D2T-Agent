@@ -156,3 +156,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# Splits (extra step)
+# - data/processed/splits/train_2022_2024.csv
+# - data/processed/splits/test_2025.csv
