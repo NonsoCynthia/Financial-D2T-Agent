@@ -1,0 +1,7 @@
+pandas
+yfinance
+requests
+pyarrow
+openai 
+mcp
+# "mcp[cli]" openai-agents

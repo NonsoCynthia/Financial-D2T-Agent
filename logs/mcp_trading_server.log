@@ -1,0 +1,38 @@
+2026-01-13 21:45:58,780 INFO mcp_trading_server:354 Starting MCP TradingTools server
+2026-01-13 21:45:58,786 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 21:46:02,487 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 21:46:02,487 INFO mcp_trading_server:224 predict_action called ticker=TSLA date=2025-06-03 buy_th=0.2500 sell_th=-0.2500
+2026-01-13 21:46:02,501 INFO mcp_trading_server:77 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 21:46:02,506 INFO mcp_trading_server:253 predict_action result ticker=TSLA date=2025-06-03 action=BUY score=6.923962
+2026-01-13 21:50:49,011 INFO mcp_trading_server:354 Starting MCP TradingTools server
+2026-01-13 21:50:49,017 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 21:50:51,082 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 21:50:51,082 INFO mcp_trading_server:224 predict_action called ticker=TSLA date=2025-04-03 buy_th=0.2500 sell_th=-0.2500
+2026-01-13 21:50:51,095 INFO mcp_trading_server:77 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 21:50:51,100 INFO mcp_trading_server:253 predict_action result ticker=TSLA date=2025-04-03 action=BUY score=0.829519
+2026-01-13 21:52:06,305 INFO mcp_trading_server:354 Starting MCP TradingTools server
+2026-01-13 21:52:06,313 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 21:52:07,305 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 21:52:07,305 INFO mcp_trading_server:224 predict_action called ticker=TSLA date=2025-06-03 buy_th=0.2500 sell_th=-0.2500
+2026-01-13 21:52:07,316 INFO mcp_trading_server:77 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 21:52:07,321 INFO mcp_trading_server:253 predict_action result ticker=TSLA date=2025-06-03 action=BUY score=6.923962
+2026-01-13 22:05:12,901 INFO mcp_trading_server:468 Starting MCP TradingTools server
+2026-01-13 22:05:12,908 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 22:05:14,621 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 22:05:14,621 INFO mcp_trading_server:282 predict_action called ticker=TSLA date=2025-06-03 method=fixed
+2026-01-13 22:05:14,635 INFO mcp_trading_server:72 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 22:05:14,641 INFO mcp_trading_server:339 predict_action result ticker=TSLA date=2025-06-03 action=BUY score=6.923962
+2026-01-13 22:16:46,560 INFO mcp_trading_server:468 Starting MCP TradingTools server
+2026-01-13 22:16:46,567 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 22:16:47,931 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 22:16:47,931 INFO mcp_trading_server:282 predict_action called ticker=TSLA date=2025-06-03 method=percentile
+2026-01-13 22:16:47,945 INFO mcp_trading_server:72 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 22:16:47,959 INFO mcp_trading_server:302 predict_action percentile thresholds ticker=TSLA buy=2.949952 sell=-2.587162 n=733
+2026-01-13 22:16:47,960 INFO mcp_trading_server:339 predict_action result ticker=TSLA date=2025-06-03 action=BUY score=6.923962
+2026-01-13 22:19:07,336 INFO mcp_trading_server:468 Starting MCP TradingTools server
+2026-01-13 22:19:07,345 INFO mcp.server.lowlevel.server:713 Processing request of type ListToolsRequest
+2026-01-13 22:19:08,801 INFO mcp.server.lowlevel.server:713 Processing request of type CallToolRequest
+2026-01-13 22:19:08,802 INFO mcp_trading_server:282 predict_action called ticker=TSLA date=2025-04-03 method=percentile
+2026-01-13 22:19:08,812 INFO mcp_trading_server:72 Loaded panel. rows=8024 cols=15 path=data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+2026-01-13 22:19:08,820 INFO mcp_trading_server:302 predict_action percentile thresholds ticker=TSLA buy=2.949952 sell=-2.587162 n=733
+2026-01-13 22:19:08,820 INFO mcp_trading_server:339 predict_action result ticker=TSLA date=2025-04-03 action=HOLD score=0.829519
