@@ -21,14 +21,20 @@ This project constructs a dataset from scratch and exposes a tool-based interfac
 .
 ├── data/
 │   ├── raw/
-│   │   ├── prices/              # Raw daily price CSVs from yfinance
-│   │   └── sec/                 # SEC company facts, ticker maps
+│   │   ├── prices/                          # Raw daily price CSVs from yfinance (per-ticker + combined)
+│   │   ├── prices_us.db                     # SQLite DB for prices and returns (US_PRICES, US_RETURNS)
+│   │   └── sec/
+│   │       ├── sec_ticker_cik_all.csv        # Full SEC ticker to CIK map
+│   │       ├── sec_ticker_cik_selected.csv   # Selected ticker to CIK map (project tickers)
+│   │       ├── sec_companyfacts.db           # SQLite DB for SEC facts (SEC_COMPANYFACTS)
+│   │       └── companyfacts/                 # CompanyFacts CSV outputs (per-ticker + combined)
 │   └── processed/
-│       ├── prices/             # Daily returns
-│       ├── panel/              # Final daily panel (prices + fundamentals)
-│       └── splits/             # Train/test splits for modelling
-├── scripts/                    # Step-by-step data processing scripts
-├── logs/                       # Server logs (e.g. MCP activity)
+│       ├── prices/                          # Returns outputs (CSV + parquet)
+│       ├── panel/                           # Daily panel outputs (CSV + parquet + SQLite)
+│       └── splits/                          # Train/test splits (CSV)
+├── scripts/                                 # Step-by-step data processing scripts
+├── logs/                                    # Server logs (for example MCP activity)
+
 ```
 
 ---
@@ -52,10 +58,32 @@ Executed via `run_scripts.py --step {step_name}` or `--step all`:
 - Tickers: `["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]`
 - Date range: `2022-01-03` to `2025-12-31` inclusive
 - Train split ends: `2024-12-31`
-- Output files:
-  - `data/processed/panel/daily_panel_prices_returns_fundamentals.csv`
-  - `data/processed/splits/train_2022_2024.csv`
-  - `data/processed/splits/test_2025.csv`
+- Output files (CSV + SQLite)
+  - Prices (Step 01):
+    - Per-ticker CSVs: `data/raw/prices/{TICKER}.csv`
+    - Combined long CSV: `data/raw/prices/all_prices_long.csv`
+    - Combined wide CSV (Adj Close): `data/raw/prices/all_prices_wide_adj_close.csv`
+    - SQLite DB: `data/raw/prices_us.db`
+    - Tables: `US_PRICES` (daily OHLCV), `US_RETURNS` (daily returns)
+  - SEC maps (Step 02):
+    - `data/raw/sec/sec_ticker_cik_all.csv`
+    - `ata/raw/sec/sec_ticker_cik_selected.csv`
+  - CompanyFacts (Step 03a):
+    - Per-ticker facts CSVs: `data/raw/sec/companyfacts/{TICKER}_companyfacts.csv`
+    - Combined facts CSV: `data/raw/sec/companyfacts/companyfacts_2022_2025.csv`
+    - SQLite DB: `data/raw/sec/sec_companyfacts.db`
+    - Table: `SEC_COMPANYFACTS`
+  - Returns (Step 04a):
+    - CSV: `data/processed/prices/daily_returns.csv`
+    - Also stored in: `data/raw/prices_us.db table US_RETURNS`
+  - Panel (Step 04b):
+    - Daily panel CSV: `data/processed/panel/daily_panel_prices_returns_fundamentals.csv`
+    - Fundamentals wide CSV: `data/processed/panel/fundamentals_wide_by_filed.csv`
+    - SQLite DB: `data/processed/panel/panel.db`
+    - Tables: `US_DAILY_PANEL`, `US_FUNDAMENTALS_WIDE_BY_FILED`
+  - Splits (Step 05) Optional:
+    - Train: `data/processed/splits/train_2022_2024.csv`
+    - Test: `data/processed/splits/test_2025.csv`
 
 ---
 
