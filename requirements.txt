@@ -3,5 +3,8 @@ yfinance
 requests
 pyarrow
 openai 
-mcp
-# "mcp[cli]" openai-agents
+# mcp
+fastmcp 
+openai-agents
+pydantic
+# "mcp[cli]"
