@@ -224,12 +224,16 @@ async def main() -> None:
             name="financial_analyst",
             instructions=FINANCIAL_ANALYST_INSTRUCTIONS,
             mcp_servers=[server],
+            model="gpt-5-mini",
+            # model_settings=ModelSettings(tool_choice="required", reasoning_effort="high"),
         )
 
         manager = Agent(
             name="financial_manager",
             instructions=FINANCIAL_MANAGER_INSTRUCTIONS,
             mcp_servers=[server],
+            model="gpt-5-mini",
+            # model_settings=ModelSettings(tool_choice="required", reasoning_effort="high"),
         )
 
         for ticker in tickers:

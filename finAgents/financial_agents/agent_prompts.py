@@ -43,6 +43,48 @@ Rules:
 - Use only information available on or before as_of_date
 """
 
+ANALYST_MONTHLY_TASK_PROMPT = """Ticker: {ticker}
+As of date: {as_of_date}
+
+Use the tool get_monthly_window(ticker, as_of_date, months=12) to fetch the 12-row monthly table.
+
+Compute the indicators listed below using only those rows:
+last_price
+total_return
+volatility
+Revenues
+NetIncomeLoss
+Assets
+Liabilities
+roe
+profit_margin
+
+Output JSON only. No markdown. No extra text. The JSON must follow this schema:
+{{
+  "ticker": "{ticker}",
+  "as_of_date": "{as_of_date}",
+  "window_months": 12,
+  "indicators": {{
+    "last_price": 123.45,
+    "total_return": 0.12,
+    "volatility": 0.34,
+    "Revenues": 1000000,
+    "NetIncomeLoss": 1000,
+    "Assets": 5000,
+    "Liabilities": 2000,
+    "roe": 0.10,
+    "profit_margin": 0.05
+  }},
+  "sources": ["get_monthly_window"]
+}}
+
+Rules:
+- Every key must exist in "indicators"
+- Each value must be a number or null
+- Do not invent any values
+"""
+
+
 REFLECTION_TASK_PROMPT = """Ticker: {ticker}
 As of date: {as_of_date}
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 # STEP_ORDER = ["prices", "sec_map", "sec_facts", "returns", "panel"]
 
+# add mapping
 STEP_SCRIPTS = {
     "prices": "scripts/01_download_prices.py",
     "sec_map": "scripts/02_sec_ticker_cik.py",
@@ -14,8 +15,9 @@ STEP_SCRIPTS = {
     "returns": "scripts/04a_compute_returns.py",
     "panel": "scripts/04b_align_fundamentals.py",
     "splits": "scripts/05_make_splits.py",
-}
+    "monthly_panel": "scripts/06_make_monthly_panel.py",
 
+}
 
 def run_step(step: str) -> int:
     script = STEP_SCRIPTS.get(step)
