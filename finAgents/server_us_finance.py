@@ -1,8 +1,21 @@
-import sys
 import os
+import sys
+from pathlib import Path
+
+# def redirect_stderr_to_file() -> None:
+#     """Redirect stderr to a file so Rich banners and logs do not break STDIO MCP."""
+#     root = Path(__file__).resolve().parents[1]
+#     logs_dir = root / "logs"
+#     logs_dir.mkdir(parents=True, exist_ok=True)
+#     err_path = logs_dir / "mcp_server_stderr.log"
+
+#     f = open(err_path, "a", encoding="utf-8")
+#     sys.stderr = f
+
+# redirect_stderr_to_file()
+
 import logging
 import sqlite3
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal, Tuple
 
 import pandas as pd
@@ -26,13 +39,19 @@ MAX_TOOL_ROWS = 800
 
 DEFAULT_CONCEPTS = [
     "Assets",
+    "AssetsCurrent",
     "Liabilities",
+    "LiabilitiesCurrent",
     "StockholdersEquity",
     "Revenues",
     "NetIncomeLoss",
     "OperatingIncomeLoss",
     "EarningsPerShareBasic",
     "CommonStockSharesOutstanding",
+    "CashAndCashEquivalentsAtCarryingValue",
+    "LongTermDebt",
+    "LongTermDebtCurrent",
+    "DebtCurrent",
 ]
 
 

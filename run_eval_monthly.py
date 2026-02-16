@@ -1,17 +1,35 @@
+"""
+Monthly evaluation for agent/workflow outputs.
+
+Stage 1 (agent): indicator accuracy metrics (NMAE, penalty, composite).
+Stage 2 (agent/workflow): simple trading simulation from manager actions.
+Pass --pred_dir pointing at *_output_*.json (agent) or *_workflow_output_*.json (workflow).
+"""
+
 # run_eval_monthly.py
 
+import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 
-# ----------------------------
-# Scaling and error metrics
-# ----------------------------
+def normalize_action(x: Any) -> str:
+    """Canonicalise manager action to BUY/SELL/HOLD."""
+    if isinstance(x, str):
+        a = x.strip().upper()
+    else:
+        a = "HOLD"
+    if a == "KEEP":
+        a = "HOLD"
+    if a in {"BUY", "SELL", "HOLD"}:
+        return a
+    return "HOLD"
+
 
 def minmax_scale(x: pd.Series) -> pd.Series:
     """Min-max scale a numeric series to [0, 1]."""
@@ -24,49 +42,44 @@ def minmax_scale(x: pd.Series) -> pd.Series:
 
 
 def nmae(y_true: pd.Series, y_pred: pd.Series) -> float:
-    """
-    Normalised MAE (Thiago-style), using min-max scaling of gold values.
-
-    This is equivalent to MAE on min-max normalised true values, which makes
-    errors comparable across indicators with different magnitudes.
-    """
-    t = minmax_scale(y_true)
-    p = minmax_scale(y_pred)
-    mask = t.notna() & p.notna()
-    if int(mask.sum()) == 0:
-        return float("nan")
-    return float(np.mean(np.abs(t[mask] - p[mask])))
-
-
-def penalty_rate(y_true: pd.Series, y_pred: pd.Series, zero_eps: float = 0.0) -> float:
-    """
-    Penalty rate (Thiago-style idea).
-
-    Penalises cases where:
-    - gold is non-zero (|gold| > zero_eps)
-    - prediction is zero or missing-like (pred is 0, or |pred| <= zero_eps, or NaN)
-
-    Returns the fraction of penalised points among comparable points.
-    """
+    """Normalised MAE as MAE divided by the gold range (max(gold) - min(gold))."""
     t = pd.to_numeric(y_true, errors="coerce")
     p = pd.to_numeric(y_pred, errors="coerce")
 
-    comparable = t.notna()
-    if int(comparable.sum()) == 0:
+    mask = t.notna() & p.notna()
+    if int(mask.sum()) == 0:
         return float("nan")
 
-    gold_non_zero = comparable & (t.abs() > float(zero_eps))
-    pred_zero_or_missing = p.isna() | (p.abs() <= float(zero_eps))
+    t2 = t[mask]
+    p2 = p[mask]
 
-    penalised = gold_non_zero & pred_zero_or_missing
-    denom = int(comparable.sum())
-    if denom == 0:
+    denom = float(t2.max() - t2.min())
+    if denom == 0.0 or np.isnan(denom):
         return float("nan")
-    return float(int(penalised.sum()) / denom)
+
+    return float(np.mean(np.abs(t2 - p2)) / denom)
+
+
+def penalty_rate(y_true: pd.Series, y_pred: pd.Series, zero_eps: float = 0.0) -> float:
+    """PenaltyRate as mean(I(pred ~ 0 AND gold !~ 0)) over comparable points."""
+    t = pd.to_numeric(y_true, errors="coerce")
+    p = pd.to_numeric(y_pred, errors="coerce")
+
+    mask = t.notna() & p.notna()
+    if int(mask.sum()) == 0:
+        return float("nan")
+
+    t2 = t[mask]
+    p2 = p[mask]
+
+    eps = float(abs(zero_eps))
+    penalised = (p2.abs() <= eps) & (t2.abs() > eps)
+    return float(np.mean(penalised.astype(float)))
+
 
 
 def composite_score(nmae_val: float, penalty_val: float, alpha: float = 10.0) -> float:
-    """Composite score: Score = NMAE + alpha * PenaltyRate."""
+    """Composite score: NMAE + alpha * PenaltyRate."""
     if np.isnan(nmae_val) and np.isnan(penalty_val):
         return float("nan")
     n = 0.0 if np.isnan(nmae_val) else float(nmae_val)
@@ -74,9 +87,24 @@ def composite_score(nmae_val: float, penalty_val: float, alpha: float = 10.0) ->
     return float(n + (float(alpha) * pr))
 
 
-# ----------------------------
-# Loading gold and predictions
-# ----------------------------
+def thiago_mae(y_true: pd.Series, y_pred: pd.Series) -> float:
+    """Thiago-style MAE after min-max scaling with scaler fit on gold values."""
+    t = pd.to_numeric(y_true, errors="coerce")
+    p = pd.to_numeric(y_pred, errors="coerce")
+    mask = t.notna() & p.notna()
+    if int(mask.sum()) == 0:
+        return float("nan")
+    t2 = t[mask]
+    p2 = p[mask]
+    t_scaled = minmax_scale(t2)
+    mn = t2.min()
+    mx = t2.max()
+    if pd.isna(mn) or pd.isna(mx) or mx == mn:
+        p_scaled = p2 * 0.0
+    else:
+        p_scaled = (p2 - mn) / (mx - mn)
+    return float(np.mean(np.abs(p_scaled - t_scaled)))
+
 
 def _first_trading_day_per_month(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
     """Keep exactly one row per ticker per calendar month, picking the first trading day."""
@@ -93,27 +121,43 @@ def _first_trading_day_per_month(df: pd.DataFrame, date_col: str = "date") -> pd
     return out
 
 
-def load_gold_monthly_panel() -> pd.DataFrame:
+def load_gold_monthly_panel(path: Optional[Path] = None) -> pd.DataFrame:
     """
-    Load your gold monthly panel and enforce one record per ticker-month.
+    Load gold monthly panel and enforce one record per ticker-month.
 
-    Important: your file can contain daily rows. We collapse to the first trading day per month,
-    which is aligned with your monthly experiment setup.
+    If the file contains daily rows, we collapse to the first trading day per month.
     """
-    p = Path("data") / "processed" / "panel" / "monthly_panel_prices_returns_fundamentals.csv"
-    df = pd.read_csv(p, low_memory=False)
+    if path is None:
+        path = Path("data") / "processed" / "panel" / "monthly_panel_prices_returns_fundamentals.csv"
+
+    df = pd.read_csv(path, low_memory=False)
     if "ticker" not in df.columns or "date" not in df.columns:
         raise ValueError("Gold panel must include 'ticker' and 'date' columns.")
-    df = _first_trading_day_per_month(df, date_col="date")
-    return df
+    return _first_trading_day_per_month(df, date_col="date")
 
 
-def load_predictions(folder: Path) -> pd.DataFrame:
+def _detect_mode_from_folder(folder: Path) -> str:
+    """Detect prediction mode by filename pattern."""
+    any_workflow = any(folder.glob("*_workflow_output_*.json"))
+    any_agent = any(folder.glob("*_output_*.json"))
+    if any_workflow and not any_agent:
+        return "workflow"
+    if any_agent and not any_workflow:
+        return "agent"
+    if any_workflow:
+        return "workflow"
+    return "agent"
+
+
+def load_predictions_agent(folder: Path) -> pd.DataFrame:
     """
-    Load monthly workflow JSON outputs into a flat table.
+    Load agent JSON outputs into a flat indicator table.
 
-    Returns a DataFrame with columns:
-    - ticker, date, month, indicator, pred_value
+    Expected file pattern:
+    - *_output_*.json
+
+    Expected structure:
+    - payload["outputs"][i]["analyst"]["indicators"] as a dict
     """
     rows: List[Dict[str, Any]] = []
 
@@ -160,16 +204,19 @@ def load_predictions(folder: Path) -> pd.DataFrame:
 
     df = df.sort_values(["ticker", "indicator", "date"]).reset_index(drop=True)
     df = df.drop_duplicates(subset=["ticker", "month", "indicator"], keep="first").reset_index(drop=True)
-
     return df
 
 
-def load_manager_actions(folder: Path) -> pd.DataFrame:
+def load_manager_actions_agent(folder: Path) -> pd.DataFrame:
     """
-    Load manager actions and prices from the saved monthly workflow outputs.
+    Load manager actions and prices from saved agent outputs.
 
-    Returns:
-    - ticker, date, month, price, action
+    Expected file pattern:
+    - *_output_*.json
+
+    Expected structure:
+    - item["price"]
+    - item["manager"]["action"] or item["manager"]["recommendation"]
     """
     rows: List[Dict[str, Any]] = []
 
@@ -193,11 +240,7 @@ def load_manager_actions(folder: Path) -> pd.DataFrame:
             if pd.isna(dt):
                 continue
 
-            action = manager.get("action")
-            if isinstance(action, str):
-                action = action.strip().upper()
-            else:
-                action = "HOLD"
+            action = normalize_action(manager.get("action") or manager.get("recommendation"))
 
             rows.append(
                 {
@@ -216,37 +259,77 @@ def load_manager_actions(folder: Path) -> pd.DataFrame:
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date_dt"]).sort_values(["ticker", "date_dt"]).reset_index(drop=True)
-    df = df.drop(columns=["date_dt"])
-    return df
+    return df.drop(columns=["date_dt"])
 
 
-# ----------------------------
-# Trading evaluation (Thiago-style)
-# ----------------------------
-
-def simulate_thiago_trades(
-    actions: pd.DataFrame,
-    risk_free_rate_annual: float = 0.0,
-) -> pd.DataFrame:
+def load_manager_actions_workflow(folder: Path) -> pd.DataFrame:
     """
-    Simulate Thiago-style monthly trading from manager actions.
+    Load manager actions for workflow outputs.
+
+    Expected file pattern:
+    - *_workflow_output_*.json
+
+    Expected structure:
+    - payload["outputs"][i]["manager"]["recommendation"] (buy|keep|sell)
+    - payload["outputs"][i]["date"]
+    There is no "price" stored in workflow output, so we will join gold prices later.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    for p in sorted(folder.glob("*_workflow_output_*.json")):
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        ticker = str(payload.get("ticker", "")).upper().strip()
+        outputs = payload.get("outputs", [])
+
+        if not isinstance(outputs, list):
+            continue
+
+        for item in outputs:
+            date = item.get("date")
+            manager = item.get("manager", {}) or {}
+
+            if not date:
+                continue
+
+            dt = pd.to_datetime(str(date), errors="coerce")
+            if pd.isna(dt):
+                continue
+
+            action = normalize_action(manager.get("action") or manager.get("recommendation"))
+
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "month": str(dt.to_period("M")),
+                    "action": action,
+                }
+            )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+
+    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date_dt"]).sort_values(["ticker", "date_dt"]).reset_index(drop=True)
+    return df.drop(columns=["date_dt"])
+
+
+def simulate_simple_trades(actions: pd.DataFrame, risk_free_rate_annual: float = 0.0) -> pd.DataFrame:
+    """
+    Simulate simple monthly trading from manager actions.
 
     Logic:
-    - BUY: append the current price to an open list (can accumulate multiple buys)
+    - BUY: append current price to open list
     - SELL: if open list non-empty, close everything at current price using average buy price
     - HOLD: do nothing
-    - Final liquidation: at the last available month, if positions remain open, sell at last price
-
-    Outputs per ticker:
-    - cumulative_return (multiplicative equity - 1)
-    - sharpe_ratio (monthly returns, annualised with sqrt(12))
-    - n_months, n_buys, n_sells, n_trades_closed
+    - Final liquidation: at last month, if positions remain open, sell at last price
     """
     if actions.empty:
         return pd.DataFrame()
 
     rf_monthly = float(risk_free_rate_annual) / 12.0
-
     results: List[Dict[str, Any]] = []
 
     for ticker, df in actions.groupby("ticker", sort=True):
@@ -266,7 +349,7 @@ def simulate_thiago_trades(
             price = row.get("price")
             action = row.get("action", "HOLD")
 
-            if pd.isna(price) or price <= 0:
+            if pd.isna(price) or float(price) <= 0:
                 monthly_rets.append(0.0)
                 continue
 
@@ -279,7 +362,7 @@ def simulate_thiago_trades(
             if action == "SELL":
                 n_sells += 1
                 if open_buys:
-                    avg_buy = float(np.mean(open_buys))
+                    avg_buy = float(np.mean(open_buys))  # average all open entries
                     r = (float(price) - avg_buy) / avg_buy
                     equity *= (1.0 + r)
                     open_buys = []
@@ -289,49 +372,42 @@ def simulate_thiago_trades(
                     monthly_rets.append(0.0)
                 continue
 
+            # HOLD or anything else: no trade, zero monthly return
             monthly_rets.append(0.0)
 
-        # Final liquidation at last price
         if len(df) > 0:
             last_price = df.iloc[-1]["price"]
             if open_buys and not pd.isna(last_price) and float(last_price) > 0:
-                avg_buy = float(np.mean(open_buys))
+                avg_buy = float(np.mean(open_buys))  # close remaining buys at final price
                 r = (float(last_price) - avg_buy) / avg_buy
                 equity *= (1.0 + r)
                 n_trades_closed += 1
                 monthly_rets[-1] = float(monthly_rets[-1] + r)
                 open_buys = []
 
-        cum_return = float(equity - 1.0)
+            cum_return = float(equity - 1.0)
 
-        rets = np.array(monthly_rets, dtype=float)
-        excess = rets - rf_monthly
+            rets = np.array(monthly_rets, dtype=float)
+            excess = rets - rf_monthly
 
-        std = float(np.std(excess, ddof=1)) if len(excess) > 1 else 0.0
-        mean = float(np.mean(excess)) if len(excess) > 0 else 0.0
-        if std > 0:
-            sharpe = float((mean / std) * math.sqrt(12.0))
-        else:
-            sharpe = float("nan")
+            std = float(np.std(excess, ddof=1)) if len(excess) > 1 else 0.0
+            mean = float(np.mean(excess)) if len(excess) > 0 else 0.0
+            sharpe = float((mean / std) * math.sqrt(12.0)) if std > 0 else float("nan")
 
-        results.append(
-            {
-                "ticker": ticker,
-                "cumulative_return": cum_return,
-                "sharpe_ratio": sharpe,
-                "n_months": int(len(df)),
-                "n_buys": int(n_buys),
-                "n_sells": int(n_sells),
-                "n_trades_closed": int(n_trades_closed),
-            }
-        )
+            results.append(
+                {
+                    "ticker": ticker,
+                    "cumulative_return": cum_return,
+                    "sharpe_ratio": sharpe,
+                    "n_months": int(len(df)),
+                    "n_buys": int(n_buys),
+                    "n_sells": int(n_sells),
+                    "n_trades_closed": int(n_trades_closed),
+                }
+            )
 
     return pd.DataFrame(results).sort_values("ticker").reset_index(drop=True)
 
-
-# ----------------------------
-# Main evaluation
-# ----------------------------
 
 def load_experiment_config() -> Dict[str, Any]:
     """Load experiment config to get risk_free_rate if present."""
@@ -341,143 +417,200 @@ def load_experiment_config() -> Dict[str, Any]:
     return {"risk_free_rate": 0.0}
 
 
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for evaluation."""
+    p = argparse.ArgumentParser()
+    p.add_argument(
+        "--mode",
+        type=str,
+        default="auto",
+        choices=["auto", "agent", "workflow"],
+        help="Which prediction format to evaluate",
+    )
+    p.add_argument(
+        "--stage1",
+        type=str,
+        default="nmae",
+        choices=["thiago", "nmae"],
+        help="Stage 1 scoring: thiago (minmax + MAE) or nmae (current default).",
+    )
+    p.add_argument(
+        "--pred_dir",
+        type=str,
+        default=None,
+        help="Folder containing prediction JSON files",
+    )
+    p.add_argument(
+        "--gold_csv",
+        type=str,
+        default="data/processed/panel/monthly_panel_prices_returns_fundamentals.csv",
+        help="Gold panel CSV path",
+    )
+    p.add_argument(
+        "--alpha",
+        type=float,
+        default=10.0,
+        help="Penalty weight for Stage 1 composite score",
+    )
+    return p.parse_args()
+
+
 def main() -> None:
     """
-    Full monthly evaluation aligned with Thiago:
+    Full monthly evaluation.
 
-    Stage 1:
-    - NMAE (normalised MAE)
+    Stage 1 (agent only):
+    - NMAE
     - PenaltyRate
     - CompositeScore = NMAE + alpha * PenaltyRate
-    Reported overall and per ticker.
 
-    Stage 2:
-    - Cumulative return (Thiago-style averaging buy positions, monthly)
-    - Sharpe ratio (monthly, annualised)
+    Stage 2 (agent and workflow):
+    - Cumulative return
+    - Sharpe ratio
     """
+    args = parse_args()
+
     cfg = load_experiment_config()
     rf = float(cfg.get("risk_free_rate", 0.0))
-    alpha = 10.0
+    alpha = float(args.alpha)
 
-    gold = load_gold_monthly_panel()
-
-    pred_dir = Path("results") / "experiments" / "monthly_workflow"
-    pred = load_predictions(pred_dir)
-
-    if pred.empty:
-        print(f"No predictions found in {pred_dir}")
-        return
-
-    # Gold month key
+    gold = load_gold_monthly_panel(Path(args.gold_csv))
     gold["month"] = pd.to_datetime(gold["date"], errors="coerce").dt.to_period("M").astype(str)
     gold["ticker"] = gold["ticker"].astype(str).str.upper().str.strip()
 
-    # Ensure last_price exists in gold (from adj_close if present)
     if "adj_close" in gold.columns:
         gold["last_price"] = pd.to_numeric(gold["adj_close"], errors="coerce")
     elif "price" in gold.columns:
         gold["last_price"] = pd.to_numeric(gold["price"], errors="coerce")
 
-    # Indicators to evaluate (Stage 1). Add more if your gold panel has them.
-    stage1_indicators = [
-        "Revenues",
-        "NetIncomeLoss",
-        "Assets",
-        "Liabilities",
-        "last_price",
-    ]
+    if args.pred_dir:
+        pred_dir = Path(args.pred_dir)
+    else:
+        pred_dir = Path("results") / "experiments" / "monthly_workflow"
 
-    for col in stage1_indicators:
-        if col in gold.columns:
-            gold[col] = pd.to_numeric(gold[col], errors="coerce")
+    mode = args.mode
+    if mode == "auto":
+        mode = _detect_mode_from_folder(pred_dir)
 
-    # Stage 1 overall
-    overall_rows: List[Dict[str, Any]] = []
-    per_ticker_rows: List[Dict[str, Any]] = []
+    if mode not in {"agent", "workflow"}:
+        mode = "agent"
 
-    for ind in stage1_indicators:
-        if ind not in gold.columns:
-            continue
+    if mode == "agent":
+        pred = load_predictions_agent(pred_dir)
+        if pred.empty:
+            print(f"No agent predictions found in {pred_dir}")
+            return
 
-        g = gold[["ticker", "month", ind]].rename(columns={ind: "gold"}).copy()
-        p = pred[pred["indicator"] == ind][["ticker", "month", "pred_value"]].rename(columns={"pred_value": "pred"}).copy()
+        stage1_indicators = ["Revenues", "NetIncomeLoss", "Assets", "Liabilities", "last_price"]
+        for col in stage1_indicators:
+            if col in gold.columns:
+                gold[col] = pd.to_numeric(gold[col], errors="coerce")
 
-        merged = g.merge(p, on=["ticker", "month"], how="inner")
-        if merged.empty:
-            continue
+        overall_rows: List[Dict[str, Any]] = []
+        per_ticker_rows: List[Dict[str, Any]] = []
 
-        nm = nmae(merged["gold"], merged["pred"])
-        pr = penalty_rate(merged["gold"], merged["pred"], zero_eps=0.0)
-        cs = composite_score(nm, pr, alpha=alpha)
+        scorer = args.stage1
 
-        overall_rows.append(
-            {
-                "indicator": ind,
-                "nmae": nm,
-                "penalty_rate": pr,
-                "composite": cs,
-                "n": int(len(merged)),
-            }
-        )
+        for ind in stage1_indicators:
+            if ind not in gold.columns:
+                continue
 
-        # Per ticker breakdown
-        for tkr, mm in merged.groupby("ticker", sort=True):
-            nm_t = nmae(mm["gold"], mm["pred"])
-            pr_t = penalty_rate(mm["gold"], mm["pred"], zero_eps=0.0)
-            cs_t = composite_score(nm_t, pr_t, alpha=alpha)
-            per_ticker_rows.append(
-                {
-                    "ticker": tkr,
-                    "indicator": ind,
-                    "nmae": nm_t,
-                    "penalty_rate": pr_t,
-                    "composite": cs_t,
-                    "n": int(len(mm)),
-                }
+            g = gold[["ticker", "month", ind]].rename(columns={ind: "gold"}).copy()
+            p = (
+                pred[pred["indicator"] == ind][["ticker", "month", "pred_value"]]
+                .rename(columns={"pred_value": "pred"})
+                .copy()
             )
 
-    overall_df = pd.DataFrame(overall_rows)
-    per_ticker_df = pd.DataFrame(per_ticker_rows)
+            merged = g.merge(p, on=["ticker", "month"], how="inner")
+            if merged.empty:
+                continue
 
-    if not overall_df.empty:
-        overall_df = overall_df.sort_values(["composite", "indicator"], na_position="last").reset_index(drop=True)
+            if scorer == "thiago":
+                mae_val = thiago_mae(merged["gold"], merged["pred"])
+                overall_rows.append({"indicator": ind, "mae": mae_val, "n": int(len(merged))})
+                for tkr, mm in merged.groupby("ticker", sort=True):
+                    per_ticker_rows.append(
+                        {"ticker": tkr, "indicator": ind, "mae": thiago_mae(mm["gold"], mm["pred"]), "n": int(len(mm))}
+                    )
+            else:
+                nm = nmae(merged["gold"], merged["pred"])
+                pr = penalty_rate(merged["gold"], merged["pred"], zero_eps=0.0)
+                cs = composite_score(nm, pr, alpha=alpha)
 
-    if not per_ticker_df.empty:
-        per_ticker_df = per_ticker_df.sort_values(["ticker", "composite", "indicator"], na_position="last").reset_index(drop=True)
+                overall_rows.append(
+                    {"indicator": ind, "nmae": nm, "penalty_rate": pr, "composite": cs, "n": int(len(merged))}
+                )
 
-    print("Stage 1 (Indicator accuracy). Overall (pooled across tickers)")
-    if overall_df.empty:
-        print("No indicator overlaps found.")
+                for tkr, mm in merged.groupby("ticker", sort=True):
+                    nm_t = nmae(mm["gold"], mm["pred"])
+                    pr_t = penalty_rate(mm["gold"], mm["pred"], zero_eps=0.0)
+                    cs_t = composite_score(nm_t, pr_t, alpha=alpha)
+                    per_ticker_rows.append(
+                        {
+                            "ticker": tkr,
+                            "indicator": ind,
+                            "nmae": nm_t,
+                            "penalty_rate": pr_t,
+                            "composite": cs_t,
+                            "n": int(len(mm)),
+                        }
+                    )
+
+        overall_df = pd.DataFrame(overall_rows)
+        per_ticker_df = pd.DataFrame(per_ticker_rows)
+
+        if not overall_df.empty:
+            overall_df = overall_df.reset_index(drop=True)
+        if not per_ticker_df.empty:
+            per_ticker_df = per_ticker_df.reset_index(drop=True)
+
+        print("Stage 1 (Indicator accuracy). Overall (pooled across tickers)")
+        print(overall_df.to_string(index=False) if not overall_df.empty else "No indicator overlaps found.")
+        if scorer == "thiago" and not overall_df.empty:
+            print(f"Stage 1 overall MAE (Thiago): {float(overall_df['mae'].mean()):.6f}")
+
+        print()
+        print("Stage 1 (Indicator accuracy). Per ticker")
+        print(per_ticker_df.to_string(index=False) if not per_ticker_df.empty else "No per-ticker overlaps found.")
+
+        actions = load_manager_actions_agent(pred_dir)
+
     else:
-        print(overall_df.to_string(index=False))
+        actions = load_manager_actions_workflow(pred_dir)
+        if actions.empty:
+            print(f"No workflow actions found in {pred_dir}")
+            return
+
+        gold_price = gold[["ticker", "month", "last_price"]].rename(columns={"last_price": "price"}).copy()
+        actions = actions.merge(gold_price, on=["ticker", "month"], how="left")
+
+        print("Stage 1 (Indicator accuracy) skipped (workflow outputs do not include analyst indicators).")
+
+    trade_df = simulate_simple_trades(actions, risk_free_rate_annual=rf)
 
     print()
-    print("Stage 1 (Indicator accuracy). Per ticker")
-    if per_ticker_df.empty:
-        print("No per-ticker overlaps found.")
-    else:
-        print(per_ticker_df.to_string(index=False))
+    print(f"Stage 2 (Trading simulation). Results ({mode})")
+    print(trade_df.to_string(index=False) if not trade_df.empty else "No manager actions found for trading simulation.")
 
-    # Stage 2 trading evaluation
-    actions = load_manager_actions(pred_dir)
-    trade_df = simulate_thiago_trades(actions, risk_free_rate_annual=rf)
-
-    print()
-    print("Stage 2 (Trading simulation). Thiago-style monthly results")
-    if trade_df.empty:
-        print("No manager actions found for trading simulation.")
-    else:
-        print(trade_df.to_string(index=False))
-
-    # Diagnostics
     gold_points = len(gold)
-    pred_points = len(pred.drop_duplicates(subset=["ticker", "month"]))
+    if mode == "agent":
+        pred_points = len(load_manager_actions_agent(pred_dir).drop_duplicates(subset=["ticker", "month"]))
+    else:
+        pred_points = len(load_manager_actions_workflow(pred_dir).drop_duplicates(subset=["ticker", "month"]))
+
     print()
     print(f"Monthly points (gold): {gold_points}")
     print(f"Monthly points (pred): {pred_points}")
-    print(f"Tickers (pred): {pred['ticker'].nunique()}")
     print(f"Tickers (gold): {gold['ticker'].nunique()}")
-    print(f"Tickers (overlap): {len(set(pred['ticker']).intersection(set(gold['ticker'])))}")
+
+    if mode == "agent":
+        pred_actions = load_manager_actions_agent(pred_dir)
+    else:
+        pred_actions = load_manager_actions_workflow(pred_dir)
+
+    print(f"Tickers (pred): {pred_actions['ticker'].nunique() if not pred_actions.empty else 0}")
+    print(f"Tickers (overlap): {len(set(pred_actions['ticker']).intersection(set(gold['ticker'])))}")
 
 
 if __name__ == "__main__":

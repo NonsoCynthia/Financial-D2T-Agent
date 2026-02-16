@@ -7,4 +7,6 @@ openai
 fastmcp 
 openai-agents
 pydantic
+tabulate
+scikit-learn
 # "mcp[cli]"

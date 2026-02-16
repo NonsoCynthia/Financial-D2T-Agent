@@ -8,14 +8,15 @@ from pathlib import Path
 
 # add mapping
 STEP_SCRIPTS = {
-    "prices": "scripts/01_download_prices.py",
-    "sec_map": "scripts/02_sec_ticker_cik.py",
-    "sec_facts": "scripts/03a_sec_companyfacts.py",
-    # "sec_filings": "scripts/03b_sec_download_filings.py",
-    "returns": "scripts/04a_compute_returns.py",
-    "panel": "scripts/04b_align_fundamentals.py",
-    "splits": "scripts/05_make_splits.py",
+    # "prices": "scripts/01_download_prices.py",
+    # "sec_map": "scripts/02_sec_ticker_cik.py",
+    # "sec_facts": "scripts/03a_sec_companyfacts.py",
+    # # "sec_filings": "scripts/03b_sec_download_filings.py",
+    # "returns": "scripts/04a_compute_returns.py",
+    # "panel": "scripts/04b_align_fundamentals.py",
+    # "splits": "scripts/05_make_splits.py",
     "monthly_panel": "scripts/06_make_monthly_panel.py",
+    "yahoo_spotcheck": "scripts/07_yahoo_gold_spotcheck.py",
 
 }
 

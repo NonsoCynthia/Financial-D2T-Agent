@@ -1,131 +1,136 @@
 # Financial-D2T-Agent
 
-**Financial-D2T-Agent** is a research-oriented system for generating BUY, HOLD, or SELL trading signals on selected stocks. It builds a clean dataset of price and fundamental features from 2022 to 2025, and uses an MCP agent to call decision-making tools.
+Thiago style monthly fundamental-analysis workflow for US equities.
 
----
+## Quick start
 
-## 🔧 Overview
+1) Build the daily panel
 
-This project constructs a dataset from scratch and exposes a tool-based interface for agent-driven prediction. It includes:
+- scripts/01_download_prices.py
+- scripts/04a_compute_returns.py
+- scripts/02_sec_ticker_cik.py
+- scripts/03a_sec_companyfacts.py
+- scripts/04b_align_fundamentals.py
 
-- Automated pipeline scripts
-- MCP tool server with prediction logic
-- Agent interface for querying tools
-- Configurable thresholds and splits
+2) Build the monthly panel used by the agents
 
----
+- scripts/06_make_monthly_panel.py
 
-## 📁 Core Directories
+3) Run the monthly multi-agent workflow
 
-```
-.
-├── data/
-│   ├── raw/
-│   │   ├── prices/                          # Raw daily price CSVs from yfinance (per-ticker + combined)
-│   │   ├── prices_us.db                     # SQLite DB for prices and returns (US_PRICES, US_RETURNS)
-│   │   └── sec/
-│   │       ├── sec_ticker_cik_all.csv        # Full SEC ticker to CIK map
-│   │       ├── sec_ticker_cik_selected.csv   # Selected ticker to CIK map (project tickers)
-│   │       ├── sec_companyfacts.db           # SQLite DB for SEC facts (SEC_COMPANYFACTS)
-│   │       └── companyfacts/                 # CompanyFacts CSV outputs (per-ticker + combined)
-│   └── processed/
-│       ├── prices/                          # Returns outputs (CSV + parquet)
-│       ├── panel/                           # Daily panel outputs (CSV + parquet + SQLite)
-│       └── splits/                          # Train/test splits (CSV)
-├── scripts/                                 # Step-by-step data processing scripts
-├── logs/                                    # Server logs (for example MCP activity)
+- python run_monthly_experiment.py
 
-```
+4) Evaluate indicator accuracy and Thiago style trading simulation
 
----
+- python run_eval_monthly.py
 
-## 🧱 Pipeline Scripts
+## Monthly agent run and evaluation (current pipeline)
 
-Executed via `run_scripts.py --step {step_name}` or `--step all`:
-
-- `01_download_prices.py`: Downloads historical price data for selected tickers
-- `02_sec_ticker_cik.py`: Maps stock tickers to SEC CIKs
-- `03a_sec_companyfacts.py`: Retrieves and stores SEC fundamental facts
-- `03b_sec_download_filings.py`: (Optional) Downloads full filings (not always needed)
-- `04a_compute_returns.py`: Computes daily and rolling returns, volatility
-- `04b_align_fundamentals.py`: Joins returns and fundamentals into panel format
-- `05_make_splits.py`: Splits data into train/test periods
-
----
-
-## 📊 Data Summary
-
-- Tickers: `["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]`
-- Date range: `2022-01-03` to `2025-12-31` inclusive
-- Train split ends: `2024-12-31`
-- Output files (CSV + SQLite)
-  - Prices (Step 01):
-    - Per-ticker CSVs: `data/raw/prices/{TICKER}.csv`
-    - Combined long CSV: `data/raw/prices/all_prices_long.csv`
-    - Combined wide CSV (Adj Close): `data/raw/prices/all_prices_wide_adj_close.csv`
-    - SQLite DB: `data/raw/prices_us.db`
-    - Tables: `US_PRICES` (daily OHLCV), `US_RETURNS` (daily returns)
-  - SEC maps (Step 02):
-    - `data/raw/sec/sec_ticker_cik_all.csv`
-    - `ata/raw/sec/sec_ticker_cik_selected.csv`
-  - CompanyFacts (Step 03a):
-    - Per-ticker facts CSVs: `data/raw/sec/companyfacts/{TICKER}_companyfacts.csv`
-    - Combined facts CSV: `data/raw/sec/companyfacts/companyfacts_2022_2025.csv`
-    - SQLite DB: `data/raw/sec/sec_companyfacts.db`
-    - Table: `SEC_COMPANYFACTS`
-  - Returns (Step 04a):
-    - CSV: `data/processed/prices/daily_returns.csv`
-    - Also stored in: `data/raw/prices_us.db table US_RETURNS`
-  - Panel (Step 04b):
-    - Daily panel CSV: `data/processed/panel/daily_panel_prices_returns_fundamentals.csv`
-    - Fundamentals wide CSV: `data/processed/panel/fundamentals_wide_by_filed.csv`
-    - SQLite DB: `data/processed/panel/panel.db`
-    - Tables: `US_DAILY_PANEL`, `US_FUNDAMENTALS_WIDE_BY_FILED`
-  - Splits (Step 05) Optional:
-    - Train: `data/processed/splits/train_2022_2024.csv`
-    - Test: `data/processed/splits/test_2025.csv`
-
----
-
-## 🤖 MCP Agent + Tools
-
-- `mcp_trading_server.py`: Exposes prediction and feature tools using MCP protocol
-  - Tools: `predict_action`, `get_features`, `list_tickers`, `get_percentile_thresholds`, etc.
-- `agent_trade.py`: Agent interface for calling tools
-  - Supports:
-    - `--mode sample --ticker TSLA --date 2025-06-03`
-    - `--mode all --limit 50`
-    - Threshold method: `--method fixed` or `--method percentile`
-
----
-
-## ▶️ Quickstart
+Run monthly agent outputs (one final file per ticker plus Thiago-style step artifacts):
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run full pipeline
-python run_scripts.py --step all
-
-# Run a single prediction
-python agent_trade.py --mode sample --ticker TSLA --date 2025-06-03
-
-# Run multiple predictions
-python agent_trade.py --mode all --limit 100
+python run_agent_monthly.py \
+  --tickers "TSLA,AMZN,NIO,MSFT,AAPL,GOOG,NFLX,COIN" \
+  --max_months 12 \
+  --model gpt-4.1-mini \
+  --test_start 2025-01-02 \
+  --test_end 2025-12-31 \
+  --server_path finAgents/server_us_finance.py \
+  --out_dir results/experiments/monthly_agent_workflow
 ```
 
-Optional override:
+Expected output structure:
+
+- `results/experiments/monthly_agent_workflow/<TICKER>_output_<timestamp>.json`
+- `results/experiments/monthly_agent_workflow/<TICKER>/<YYYY-MM-DD>_analyst_0.json`
+- `results/experiments/monthly_agent_workflow/<TICKER>/<YYYY-MM-DD>_manager_0.json`
+- `results/experiments/monthly_agent_workflow/results_sample.json`
+- `results/experiments/monthly_agent_workflow/decisions_sample.json`
+
+Evaluate in agent mode:
 
 ```bash
-python agent_trade.py --mode sample --ticker TSLA --date 2025-06-03 \
-  --method percentile --q_buy 0.85 --q_sell 0.15
+# Thiago-style Stage 1 (default): min-max on gold + MAE
+python run_eval_monthly.py \
+  --mode agent \
+  --pred_dir results/experiments/monthly_agent_workflow \
+  --gold_csv data/processed/panel/monthly_panel_prices_returns_fundamentals.csv \
+  --stage1 thiago
+
+# Alternative Stage 1: NMAE + penalty
+python run_eval_monthly.py \
+  --mode agent \
+  --pred_dir results/experiments/monthly_agent_workflow \
+  --gold_csv data/processed/panel/monthly_panel_prices_returns_fundamentals.csv \
+  --stage1 nmae
 ```
 
----
+## Data sources in this repository (US pipeline)
 
-## 📝 Notes
+This document lists the data sources you currently use, what each one provides, and where you store it.
 
-- Logs from the MCP server are written to `logs/mcp_trading_server.log`
-- SEC requests require a valid user agent string in `config.py`
-- All scripts are designed to be re-runnable without overwriting valid output
+## 1) Market price data (OHLCV)
+Source: Yahoo Finance via yfinance (scripts/01_download_prices.py)
+Provides: Daily Open, High, Low, Close, Adj Close, Volume for each ticker (TSLA, AMZN, NIO, MSFT, AAPL, GOOG, NFLX, COIN) across your configured date range.
+Stored as:
+- CSV per ticker under data/raw/prices/ (if enabled in your scripts)
+- SQLite database data/raw/prices_us.db, table US_PRICES
+
+## 2) Return series derived from prices
+Source: Computed locally from Yahoo Finance prices (scripts/04a_compute_returns.py)
+Provides: Daily return fields such as RET_1D and LOG_RET_1D (plus aligned adjusted close where applicable).
+Stored as:
+- CSV data/processed/prices/daily_returns.csv
+- SQLite database data/raw/prices_us.db, table US_RETURNS
+
+## 3) SEC ticker to CIK mapping
+Source: SEC published mapping (scripts/02_sec_ticker_cik.py)
+Provides: Ticker to CIK mapping used to query SEC endpoints.
+Stored as:
+- CSV data/raw/sec/sec_ticker_cik_all.csv
+- CSV data/raw/sec/sec_ticker_cik_selected.csv
+
+## 4) SEC CompanyFacts fundamentals (XBRL facts)
+Source: SEC EDGAR CompanyFacts JSON endpoint (scripts/03a_sec_companyfacts.py)
+Provides: XBRL facts and metadata, including concepts such as:
+- Assets, Liabilities, StockholdersEquity
+- Revenues, NetIncomeLoss, OperatingIncomeLoss
+- EarningsPerShareBasic, CommonStockSharesOutstanding
+Plus fields like form (10-K, 10-Q), fiscal year, fiscal period, end date, filed date, accession number, unit, and frame where available.
+Stored as:
+- CSV data/raw/sec/companyfacts/companyfacts_2022_2025.csv
+- SQLite database data/raw/sec/sec_companyfacts.db, table SEC_COMPANYFACTS
+
+## 5) Merged daily panel (prices + returns + fundamentals aligned)
+Source: Built locally by aligning the latest filed fundamentals to each trading day (scripts/04b_align_fundamentals.py)
+Provides: Per day per ticker:
+- Price and return fields
+- Fundamentals carried forward using the latest filed data on or before each trading day
+Stored as:
+- CSV data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+- CSV data/processed/panel/fundamentals_wide_by_filed.csv
+- SQLite database data/processed/panel/panel.db, tables US_DAILY_PANEL and US_FUNDAMENTALS_WIDE_BY_FILED
+
+## 6) Train and test splits
+Source: Built locally (scripts/05_make_splits.py)
+Provides: Train and test split files by date ranges.
+Stored as:
+- CSV data/processed/splits/train_2022_2024.csv
+- CSV data/processed/splits/test_2025.csv
+
+## 7) Agent runtime inputs via MCP tools
+These are not new data sources. They are tool wrappers over your stored artefacts.
+
+MCP server: finAgents/server_us_finance.py
+Reads from:
+- data/raw/prices_us.db (prices and returns)
+- data/raw/sec/sec_companyfacts.db (SEC fundamentals)
+- data/processed/panel/panel.db (merged panel)
+
+Tools exposed:
+- list_tickers
+- get_prices
+- get_returns
+- get_companyfacts
+- get_panel
+- get_price_series (minimal series, if enabled)

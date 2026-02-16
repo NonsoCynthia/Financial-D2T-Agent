@@ -42,8 +42,8 @@ def get_monthly_window_tool(panel_db_path: Path, ticker: str, as_of_date: str, m
     q = """
     SELECT *
     FROM US_MONTHLY_PANEL
-    WHERE ticker = ? AND date <= ?
-    ORDER BY date DESC
+    WHERE ticker = ? AND DATE(date) <= DATE(?)
+    ORDER BY DATE(date) DESC
     LIMIT ?
     """
 

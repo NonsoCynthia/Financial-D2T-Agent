@@ -1,19 +1,21 @@
 from enum import Enum
+
 from pydantic import BaseModel, Field
 
+
 class Recommendation(str, Enum):
-    """
-    Final decision.
-    """
+    """Thiago style manager recommendations."""
+
     buy = "BUY"
+    keep = "KEEP"
     sell = "SELL"
 
 
-class FinanceOutput(BaseModel):
-    """
-    The manager output. Interpretation, decision, justification.
-    """
-    interpretation: str = Field(...)
-    recommendation: Recommendation = Field(...)
-    justification: str = Field(...)
+class ManagerDecision(BaseModel):
+    """Structured output for the Financial Manager."""
 
+    ticker: str = Field(...)
+    date: str = Field(...)
+    recommendation: Recommendation = Field(...)
+    target_price: float | None = Field(default=None)
+    justification: str = Field(...)

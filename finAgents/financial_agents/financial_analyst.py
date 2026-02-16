@@ -1,39 +1,80 @@
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 
-class Indicator(str, Enum):
-    last_price = "last_price"
-    total_return = "total_return"
-    volatility = "volatility"
-    revenues = "Revenues"
-    net_income = "NetIncomeLoss"
+class FundamentalIndicator(str, Enum):
+    """Canonical names for the 32 indicators in Thiago's fundamental analysis setup."""
+
+    # Balance sheet
     assets = "Assets"
-    liabilities = "Liabilities"
-    roe = "roe"
-    profit_margin = "profit_margin"
+    current_assets = "CurrentAssets"
+    cash_and_equivalents = "CashAndEquivalents"
+    gross_debt = "GrossDebt"
+    net_debt = "NetDebt"
+    shareholders_equity = "ShareholdersEquity"
+
+    # Income statement (quarter and trailing twelve months)
+    net_revenue_ttm = "NetRevenue_TTM"
+    net_revenue_q = "NetRevenue_Q"
+    ebit_ttm = "EBIT_TTM"
+    ebit_q = "EBIT_Q"
+    net_profit_ttm = "NetProfit_TTM"
+    net_profit_q = "NetProfit_Q"
+
+    # Valuation
+    pe = "P_E"
+    pb = "P_B"
+    pebit = "P_EBIT"
+    price_to_sales = "PriceToSales"
+    price_to_assets = "PriceToAssets"
+    price_to_working_capital = "PriceToWorkingCapital"
+    price_to_net_current_assets = "PriceToNetCurrentAssets"
+    ev_ebit = "EV_EBIT"
+    ev_ebitda = "EV_EBITDA"
+
+    # Per share
+    eps = "EPS"
+    bvps = "BVPS"
+
+    # Profitability and margins
+    gross_margin = "GrossMargin"
+    ebit_margin = "EBITMargin"
+    net_margin = "NetMargin"
+    ebit_to_assets = "EBIT_Assets"
+    roe = "ROE"
+    roic = "ROIC"
+
+    # Leverage and efficiency
+    current_ratio = "CurrentRatio"
+    gross_debt_to_equity = "GrossDebt_Equity"
+    asset_turnover = "AssetTurnover"
 
 
-class IndicatorsReport(BaseModel):
-    """
-    Optional structured type if you want it later.
-    """
+class FundamentalReport(BaseModel):
+    """Structured output for the Fundamental Analyst."""
+
     ticker: str = Field(...)
     as_of_date: str = Field(...)
-    indicators: Dict[str, float | None] = Field(default_factory=dict)
+    window_months: int = Field(12)
+    indicators: Dict[str, Optional[float]] = Field(default_factory=dict)
+    notes: str = Field(default="")
+    sources: List[str] = Field(default_factory=list)
+
+
+def expected_indicator_keys() -> List[str]:
+    """Return the expected indicator keys in the output JSON."""
+
+    return [i.value for i in FundamentalIndicator]
 
 
 def find_missing_indicators_from_json(payload: Dict[str, Any], expected: List[str]) -> List[str]:
-    """
-    Identify which expected indicators are missing or null in the analyst JSON.
+    """Identify which expected indicators are missing or null in the analyst JSON."""
 
-    payload: parsed JSON dict returned by the analyst
-    expected: list of indicator names expected to exist in payload["indicators"]
-    returns: list of indicator names that are missing or have null value
-    """
     indicators = payload.get("indicators", {})
+    if not isinstance(indicators, dict):
+        indicators = {}
 
     missing: List[str] = []
     for name in expected:

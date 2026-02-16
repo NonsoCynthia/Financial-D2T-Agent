@@ -37,7 +37,53 @@ def build_monthly_panel(daily_panel_csv: Path) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
+    first_rows = _add_simple_price_columns(first_rows)
+
     return first_rows
+
+
+def _add_simple_price_columns(monthly: pd.DataFrame) -> pd.DataFrame:
+    """Add price columns aligned with simple's monthly input table.
+
+    simple uses: open, close, average, minimum, maximum, and volume.
+    Your daily panel may not have Yahoo-style column names (Open/High/Low/Close/Volume),
+    so this function supports multiple common variants.
+
+    It guarantees that pd.concat only receives Series objects, never scalars.
+    """
+
+    def _get_numeric_series(df: pd.DataFrame, candidates: list[str]) -> Optional[pd.Series]:
+        """Return a numeric Series for the first matching column name, else None."""
+        for col in candidates:
+            if col in df.columns:
+                return pd.to_numeric(df[col], errors="coerce")
+        return None
+
+    out = monthly.copy()
+
+    o = _get_numeric_series(out, ["Open", "open", "price_open"])
+    h = _get_numeric_series(out, ["High", "high", "price_high"])
+    l = _get_numeric_series(out, ["Low", "low", "price_low"])
+    c = _get_numeric_series(out, ["Close", "close", "price_close"])
+    v = _get_numeric_series(out, ["Volume", "volume", "price_volume"])
+
+    cols_for_avg: list[pd.Series] = [s for s in [o, h, l, c] if isinstance(s, pd.Series)]
+
+    if cols_for_avg:
+        avg = pd.concat(cols_for_avg, axis=1).mean(axis=1, skipna=True)
+    else:
+        adj = _get_numeric_series(out, ["Adj Close", "Adj_Close", "adj_close", "AdjClose"])
+        avg = adj if isinstance(adj, pd.Series) else pd.Series([pd.NA] * len(out), index=out.index)
+
+    out["price_open"] = o
+    out["price_close"] = c
+    out["price_avg"] = avg
+    out["price_min"] = l
+    out["price_max"] = h
+    out["price_volume"] = v
+
+    return out
+
 
 
 def save_monthly_outputs(monthly: pd.DataFrame, out_csv: Path) -> None:
