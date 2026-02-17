@@ -503,6 +503,15 @@ def _validate_analyst_output(
     return validated
 
 
+def _missing_expected_indicators(indicators: Dict[str, Any]) -> List[str]:
+    """Return expected indicators that are missing/null."""
+    missing: List[str] = []
+    for k in EXPECTED_ANALYST_INDICATORS:
+        if _numeric_or_none(indicators.get(k)) is None:
+            missing.append(k)
+    return missing
+
+
 def _validate_manager_output(
     *,
     raw_output: Dict[str, Any],
@@ -757,6 +766,8 @@ async def run_one_ticker(
     test_start: str,
     test_end: str,
     max_months: int = 12,
+    reflection: bool = False,
+    reflection_max_rounds: int = 1,
     out_dir: Path = Path("results") / "experiments" / "monthly_agent_workflow",
 ) -> None:
     """
@@ -861,6 +872,63 @@ async def run_one_ticker(
             base_errors=compute_errors + analyst_parse_errors,
             sources_fallback=["get_monthly_window", "get_companyfacts"],
         )
+
+        # Paper-faithful reflection: if expected indicators are missing, re-call analyst with explicit feedback.
+        reflection_used = 0
+        if reflection and int(reflection_max_rounds) > 0:
+            for rr in range(int(reflection_max_rounds)):
+                missing = _missing_expected_indicators(analyst_json.get("indicators", {}))
+                if not missing:
+                    break
+
+                reflection_used += 1
+                reflection_prompt = (
+                    analyst_prompt(ticker=ticker, as_of_date=date)
+                    + "\n\nFeedback: Compute ONLY the following missing indicators and return full JSON: "
+                    + json.dumps(missing)
+                )
+                reflected_result = await Runner.run(analyst, reflection_prompt)
+                reflected_raw = parse_json_safe(
+                    reflected_result.final_output,
+                    fallback={},
+                    label=f"analyst_reflection_round_{rr + 1}",
+                )
+                if not reflected_raw:
+                    reflected_raw = await repair_to_json(
+                        analyst,
+                        str(reflected_result.final_output),
+                        analyst_schema,
+                        fallback={},
+                    )
+
+                reflected_indicators = reflected_raw.get("indicators", {})
+                if not isinstance(reflected_indicators, dict):
+                    analyst_json["errors"].append(
+                        f"reflection round {rr + 1}: reflected indicators object missing"
+                    )
+                    continue
+
+                filled = 0
+                for k in missing:
+                    v = _numeric_or_none(reflected_indicators.get(k))
+                    if v is None:
+                        continue
+                    if _numeric_or_none(analyst_json["indicators"].get(k)) is None:
+                        analyst_json["indicators"][k] = v
+                        filled += 1
+
+                analyst_json["errors"].append(
+                    f"reflection round {rr + 1}: requested={len(missing)} filled={filled}"
+                )
+
+            # Refresh optional-missing field after reflection merges.
+            analyst_json["missing_optional_indicators"] = [
+                k
+                for k in _missing_expected_indicators(analyst_json.get("indicators", {}))
+                if k not in set(REQUIRED_INDICATORS) and k != "last_price"
+            ]
+            analyst_json["reflection_rounds_used"] = int(reflection_used)
+
         if any(analyst_json["indicators"].get(k) is None for k in REQUIRED_INDICATORS if k != "last_price"):
             months_with_null_indicators += 1
         print(
@@ -1006,6 +1074,17 @@ async def main() -> None:
     )
     parser.add_argument("--test_start", type=str, default=None, help="Test start date (YYYY-MM-DD)")
     parser.add_argument("--test_end", type=str, default=None, help="Test end date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--reflection",
+        action="store_true",
+        help="Enable paper-style reflection loop for missing analyst indicators.",
+    )
+    parser.add_argument(
+        "--reflection_max_rounds",
+        type=int,
+        default=1,
+        help="Maximum analyst reflection rounds when --reflection is enabled.",
+    )
     parser.add_argument("--server_path", type=str, default="finAgents/server_us_finance.py", help="Path to MCP server script")
     parser.add_argument(
         "--out_dir",
@@ -1058,6 +1137,8 @@ async def main() -> None:
                 test_start=test_start,
                 test_end=test_end,
                 max_months=int(args.max_months),
+                reflection=bool(args.reflection),
+                reflection_max_rounds=int(args.reflection_max_rounds),
                 out_dir=out_dir,
             )
 
