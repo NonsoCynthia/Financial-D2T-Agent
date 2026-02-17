@@ -37,7 +37,7 @@ from finAgents.financial_agents.agent_prompts import (
 from finAgents.financial_agents.financial_analyst import expected_indicator_keys
 
 DEFAULT_TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]
-REQUIRED_INDICATORS = ["Assets", "Liabilities", "Revenues", "NetIncomeLoss", "last_price"]
+REQUIRED_INDICATORS = ["Assets", "Liabilities", "Revenues", "NetIncomeLoss"]
 EXPECTED_ANALYST_INDICATORS = expected_indicator_keys()
 CANONICAL_ACTIONS = {"BUY", "SELL", "HOLD"}
 KEEP_BAND = 0.05
@@ -245,6 +245,42 @@ def _pick_numeric(row: Dict[str, Any], keys: List[str]) -> Optional[float]:
     return None
 
 
+def _indicators_to_map(indicators: Any) -> Dict[str, Optional[float]]:
+    """Normalize indicator payload from dict or list[{indicator,value}] into a map."""
+    out: Dict[str, Optional[float]] = {}
+    if isinstance(indicators, dict):
+        for k, v in indicators.items():
+            name = str(k).strip()
+            if not name:
+                continue
+            out[name] = _numeric_or_none(v)
+        return out
+
+    if isinstance(indicators, list):
+        for item in indicators:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("indicator") or item.get("name") or "").strip()
+            if not name:
+                continue
+            out[name] = _numeric_or_none(item.get("value"))
+    return out
+
+
+def _indicators_to_list(ind_map: Dict[str, Optional[float]]) -> List[Dict[str, Any]]:
+    """Render indicator map as paper-style list[{indicator,value}]."""
+    rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for k in EXPECTED_ANALYST_INDICATORS:
+        rows.append({"indicator": k, "value": _numeric_or_none(ind_map.get(k))})
+        seen.add(k)
+    for k, v in ind_map.items():
+        if k in seen:
+            continue
+        rows.append({"indicator": str(k), "value": _numeric_or_none(v)})
+    return rows
+
+
 def _normalize_date_token(x: Any) -> str:
     """Normalize a date-like value to YYYY-MM-DD when possible."""
     s = str(x).strip()
@@ -340,13 +376,12 @@ def _build_results_row(
     out["date"] = str(decision_date)
     out["month_price"] = float(month_price)
 
-    if isinstance(analyst_indicators, dict):
-        for k, v in analyst_indicators.items():
-            key = str(k).strip()
-            if not key:
-                continue
-            num = _numeric_or_none(v)
-            out[key] = num if num is not None else None
+    indicator_map = _indicators_to_map(analyst_indicators)
+    for k, v in indicator_map.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        out[key] = _numeric_or_none(v)
 
     # Keep this explicit and consistent for manager decision context.
     out["last_price"] = float(month_price)
@@ -354,65 +389,6 @@ def _build_results_row(
     out["PREVIOUS_TARGET_PRICE"] = previous_decision.get("Target Price", "N/A")
     out["PREVIOUS_RECOMMENDATION"] = previous_decision.get("Recommendation", "N/A")
     return out
-
-
-def compute_indicators(
-    monthly_window_rows: List[Dict[str, Any]],
-    company_facts_rows: List[Dict[str, Any]],
-    month_price: float,
-) -> tuple[Dict[str, Optional[float]], List[str]]:
-    """
-    Deterministic indicator computation used for evaluation-critical fields.
-    Missing values remain null and are tracked in errors.
-    """
-    errors: List[str] = []
-    row = monthly_window_rows[-1] if monthly_window_rows else {}
-    if not isinstance(row, dict):
-        row = {}
-        errors.append("latest monthly window row is missing")
-
-    # Optional fallback from company facts: concept -> latest numeric value.
-    fact_latest: Dict[str, float] = {}
-    if isinstance(company_facts_rows, list):
-        for f in company_facts_rows:
-            if not isinstance(f, dict):
-                continue
-            concept = str(f.get("concept") or f.get("name") or "").strip()
-            value = _numeric_or_none(f.get("value"))
-            if concept and value is not None:
-                fact_latest[concept] = value
-
-    assets = _pick_numeric(row, ["Assets"])
-    liabilities = _pick_numeric(row, ["Liabilities"])
-    revenues = _pick_numeric(row, ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"])
-    net_income = _pick_numeric(row, ["NetIncomeLoss"])
-
-    if assets is None:
-        assets = fact_latest.get("Assets")
-    if liabilities is None:
-        liabilities = fact_latest.get("Liabilities")
-    if revenues is None:
-        revenues = (
-            fact_latest.get("Revenues")
-            or fact_latest.get("RevenueFromContractWithCustomerExcludingAssessedTax")
-            or fact_latest.get("SalesRevenueNet")
-        )
-    if net_income is None:
-        net_income = fact_latest.get("NetIncomeLoss")
-
-    indicators: Dict[str, Optional[float]] = {
-        "Assets": assets,
-        "Liabilities": liabilities,
-        "Revenues": revenues,
-        "NetIncomeLoss": net_income,
-        "last_price": float(month_price),
-    }
-
-    for k in REQUIRED_INDICATORS:
-        if indicators.get(k) is None:
-            errors.append(f"missing value for {k}")
-
-    return indicators, errors
 
 
 def _validate_analyst_output(
@@ -423,7 +399,6 @@ def _validate_analyst_output(
     window_months_requested: int,
     window_rows_used: int,
     price_used: float,
-    indicators: Dict[str, Optional[float]],
     base_errors: List[str],
     sources_fallback: List[str],
 ) -> Dict[str, Any]:
@@ -442,15 +417,16 @@ def _validate_analyst_output(
     if not sources:
         sources = list(sources_fallback)
 
-    raw_indicators = raw_output.get("indicators", {})
-    if not isinstance(raw_indicators, dict):
-        raw_indicators = {}
-        errors.append("analyst indicators was not an object")
+    raw_indicators_any = raw_output.get("indicators", {})
+    if not isinstance(raw_indicators_any, (dict, list)):
+        raw_indicators_any = {}
+        errors.append("analyst indicators was not dict/list")
+    raw_indicators = _indicators_to_map(raw_indicators_any)
 
     out_indicators: Dict[str, Optional[float]] = {}
     missing_expected: List[str] = []
     for k in EXPECTED_ANALYST_INDICATORS:
-        v = _numeric_or_none(raw_indicators.get(k))
+        v = raw_indicators.get(k)
         out_indicators[k] = v
         if v is None:
             missing_expected.append(k)
@@ -461,17 +437,7 @@ def _validate_analyst_output(
             continue
         out_indicators[name] = _numeric_or_none(v)
 
-    missing_core: List[str] = []
-    for k in REQUIRED_INDICATORS:
-        if k == "last_price":
-            continue
-        deterministic_v = _numeric_or_none(indicators.get(k))
-        if deterministic_v is None:
-            deterministic_v = _numeric_or_none(raw_indicators.get(k))
-        out_indicators[k] = deterministic_v
-        if deterministic_v is None:
-            missing_core.append(k)
-
+    missing_core = [k for k in REQUIRED_INDICATORS if _numeric_or_none(out_indicators.get(k)) is None]
     if missing_core:
         errors.append("core indicators missing_or_null: {0}".format(", ".join(missing_core)))
 
@@ -479,16 +445,13 @@ def _validate_analyst_output(
         k for k in missing_expected if k not in set(REQUIRED_INDICATORS) and k != "last_price"
     ]
 
-    # Enforce price consistency across pipeline.
-    out_indicators["last_price"] = float(price_used)
-
     validated = {
         "ticker": str(ticker),
         "as_of_date": str(as_of_date),
         "window_months_requested": int(window_months_requested),
         "window_rows_used": int(window_rows_used),
         "price_used": float(price_used),
-        "indicators": out_indicators,
+        "indicators": _indicators_to_list(out_indicators),
         "notes": notes.strip(),
         "sources": sources,
         "missing_optional_indicators": optional_missing,
@@ -505,9 +468,10 @@ def _validate_analyst_output(
 
 def _missing_expected_indicators(indicators: Dict[str, Any]) -> List[str]:
     """Return expected indicators that are missing/null."""
+    ind_map = _indicators_to_map(indicators)
     missing: List[str] = []
     for k in EXPECTED_ANALYST_INDICATORS:
-        if _numeric_or_none(indicators.get(k)) is None:
+        if _numeric_or_none(ind_map.get(k)) is None:
             missing.append(k)
     return missing
 
@@ -631,30 +595,6 @@ async def fetch_monthly_window(agent: Agent, ticker: str, as_of_date: str, month
             expected_schema,
             fallback={"rows": [], "n": 0},
         )
-
-
-async def fetch_companyfacts_rows(agent: Agent, ticker: str, as_of_date: str) -> List[Dict[str, Any]]:
-    """Fetch a compact set of companyfacts rows for required concepts."""
-    prompt = (
-        f'Use the tool get_companyfacts for ticker "{ticker}" with concepts '
-        '["Assets","Liabilities","Revenues","NetIncomeLoss"], '
-        f'then keep only rows with date <= "{as_of_date}" when date exists, '
-        'and return JSON with {"rows":[...]} only.'
-    )
-    result = await Runner.run(agent, prompt)
-    try:
-        payload = parse_json_strict(result.final_output)
-    except json.JSONDecodeError:
-        print("[agent][warn] get_companyfacts payload was not strict JSON", file=sys.stderr, flush=True)
-        expected_schema = '{ "rows": [{"concept":"Assets","date":"2025-01-02","value":123.45}] }'
-        payload = await repair_to_json(
-            agent,
-            str(result.final_output),
-            expected_schema,
-            fallback={"rows": []},
-        )
-    rows = payload.get("rows", [])
-    return rows if isinstance(rows, list) else []
 
 
 async def fetch_monthly_rows(analyst: Agent, ticker: str, test_start: str, test_end: str, max_months: int = 12) -> List[Dict[str, Any]]:
@@ -810,26 +750,14 @@ async def run_one_ticker(
             monthly_window_rows = monthly_window_df.to_dict(orient="records")
         window_rows_used = int(len(monthly_window_rows))
 
-        computed_indicators, compute_errors = compute_indicators(
-            monthly_window_rows=monthly_window_rows,
-            company_facts_rows=[],
-            month_price=price_today,
-        )
-        if any(computed_indicators.get(k) is None for k in REQUIRED_INDICATORS if k != "last_price"):
-            cf_rows = await fetch_companyfacts_rows(analyst, ticker, date)
-            computed_indicators, extra_errors = compute_indicators(
-                monthly_window_rows=monthly_window_rows,
-                company_facts_rows=cf_rows,
-                month_price=price_today,
-            )
-            compute_errors.extend(extra_errors)
+        compute_errors: List[str] = []
 
         # Analyst step with strict parse/repair/validation
         analyst_result = await Runner.run(analyst, analyst_prompt(ticker=ticker, as_of_date=date))
         analyst_schema = (
             '{ "ticker": "TSLA", "as_of_date": "2025-01-02", "window_months_requested": 12, '
             '"window_rows_used": 1, "price_used": 123.45, '
-            '"indicators": {"Assets": null, "Liabilities": null, "Revenues": null, "NetIncomeLoss": null, "last_price": 123.45}, '
+            '"indicators": [{"indicator":"Assets","value":null},{"indicator":"Liabilities","value":null}], '
             '"notes": "...", "sources": ["get_monthly_window"], "errors": [] }'
         )
         analyst_parse_errors: List[str] = []
@@ -868,8 +796,7 @@ async def run_one_ticker(
             window_months_requested=int(max_months),
             window_rows_used=window_rows_used,
             price_used=price_today,
-            indicators=computed_indicators,
-            base_errors=compute_errors + analyst_parse_errors,
+            base_errors=analyst_parse_errors + compute_errors,
             sources_fallback=["get_monthly_window", "get_companyfacts"],
         )
 
@@ -901,21 +828,21 @@ async def run_one_ticker(
                         fallback={},
                     )
 
-                reflected_indicators = reflected_raw.get("indicators", {})
-                if not isinstance(reflected_indicators, dict):
-                    analyst_json["errors"].append(
-                        f"reflection round {rr + 1}: reflected indicators object missing"
-                    )
+                base_map = _indicators_to_map(analyst_json.get("indicators", {}))
+                reflected_map = _indicators_to_map(reflected_raw.get("indicators", {}))
+                if not reflected_map:
+                    analyst_json["errors"].append(f"reflection round {rr + 1}: reflected indicators missing")
                     continue
 
                 filled = 0
                 for k in missing:
-                    v = _numeric_or_none(reflected_indicators.get(k))
+                    v = _numeric_or_none(reflected_map.get(k))
                     if v is None:
                         continue
-                    if _numeric_or_none(analyst_json["indicators"].get(k)) is None:
-                        analyst_json["indicators"][k] = v
+                    if _numeric_or_none(base_map.get(k)) is None:
+                        base_map[k] = v
                         filled += 1
+                analyst_json["indicators"] = _indicators_to_list(base_map)
 
                 analyst_json["errors"].append(
                     f"reflection round {rr + 1}: requested={len(missing)} filled={filled}"
@@ -929,7 +856,8 @@ async def run_one_ticker(
             ]
             analyst_json["reflection_rounds_used"] = int(reflection_used)
 
-        if any(analyst_json["indicators"].get(k) is None for k in REQUIRED_INDICATORS if k != "last_price"):
+        ind_map_for_count = _indicators_to_map(analyst_json.get("indicators", {}))
+        if any(_numeric_or_none(ind_map_for_count.get(k)) is None for k in REQUIRED_INDICATORS):
             months_with_null_indicators += 1
         print(
             f"[agent][debug] {ticker} {date} window_rows_used={window_rows_used}",
@@ -1145,34 +1073,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-# TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]
-
-# python run_monthly_experiment.py
-# python run_eval_monthly.py
-# How to use it:
-# Use tickers from config/experiment.json:
-# python run_monthly_experiment.py
-
-# Override tickers from the command line:
-# python run_monthly_experiment.py --tickers TSLA,AMZN,NIO,MSFT,AAPL,GOOG,NFLX,COIN
-
-# Change number of months:
-# python run_monthly_experiment.py --max_months 12
-# Default model = gpt 4.1
-
-# TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]
-
-# python run_monthly_experiment.py
-# python run_eval_monthly.py
-# How to use it:
-# Use tickers from config/experiment.json:
-# python run_monthly_experiment.py
-
-# Override tickers from the command line:
-# python run_monthly_experiment.py --tickers TSLA,AMZN,NIO,MSFT,AAPL,GOOG,NFLX,COIN
-
-# Change number of months:
-# python run_monthly_experiment.py --max_months 12
-# Default model = gpt 4.1

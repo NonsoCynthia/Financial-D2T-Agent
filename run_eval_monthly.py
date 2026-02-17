@@ -172,9 +172,21 @@ def load_predictions_agent(folder: Path) -> pd.DataFrame:
         for item in outputs:
             date = item.get("date")
             analyst = item.get("analyst", {}) or {}
-            indicators = analyst.get("indicators", {}) or {}
+            indicators_raw = analyst.get("indicators", {}) or {}
 
-            if not date or not isinstance(indicators, dict):
+            indicators: Dict[str, Any] = {}
+            if isinstance(indicators_raw, dict):
+                indicators = indicators_raw
+            elif isinstance(indicators_raw, list):
+                for elem in indicators_raw:
+                    if not isinstance(elem, dict):
+                        continue
+                    name = str(elem.get("indicator") or elem.get("name") or "").strip()
+                    if not name:
+                        continue
+                    indicators[name] = elem.get("value")
+
+            if not date or not indicators:
                 continue
 
             dt = pd.to_datetime(str(date), errors="coerce")
