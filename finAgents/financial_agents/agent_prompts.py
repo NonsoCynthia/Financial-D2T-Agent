@@ -30,54 +30,50 @@ As of date: {as_of_date}
 2) If needed, use get_companyfacts(ticker, concepts=[...]) to fetch missing accounting fields.
 3) Compute the 32 fundamental indicators listed below. Use only information available on or before as_of_date.
 
-Indicators (must all exist as keys under indicators):
+Indicators (all must be present as entries in indicators):
 {indicator_keys}
 
 Output JSON only. No markdown. No extra text. The JSON must follow this schema:
 {{
-  "ticker": "{ticker}",
-  "as_of_date": "{as_of_date}",
-  "window_months": 12,
-  "indicators": {{
-    "Assets": 0.0,
-    "CurrentAssets": 0.0,
-    "CashAndEquivalents": 0.0,
-    "GrossDebt": 0.0,
-    "NetDebt": 0.0,
-    "ShareholdersEquity": 0.0,
-    "NetRevenue_TTM": 0.0,
-    "NetRevenue_Q": 0.0,
-    "EBIT_TTM": 0.0,
-    "EBIT_Q": 0.0,
-    "NetProfit_TTM": 0.0,
-    "NetProfit_Q": 0.0,
-    "P_E": 0.0,
-    "P_B": 0.0,
-    "P_EBIT": 0.0,
-    "PriceToSales": 0.0,
-    "PriceToAssets": 0.0,
-    "PriceToWorkingCapital": 0.0,
-    "PriceToNetCurrentAssets": 0.0,
-    "EV_EBIT": 0.0,
-    "EV_EBITDA": 0.0,
-    "EPS": 0.0,
-    "BVPS": 0.0,
-    "GrossMargin": 0.0,
-    "EBITMargin": 0.0,
-    "NetMargin": 0.0,
-    "EBIT_Assets": 0.0,
-    "ROE": 0.0,
-    "ROIC": 0.0,
-    "CurrentRatio": 0.0,
-    "GrossDebt_Equity": 0.0,
-    "AssetTurnover": 0.0
-  }},
-  "notes": "brief explanation of any mapping assumptions or missing fields",
-  "sources": ["get_monthly_window", "get_companyfacts"]
+  "indicators": [
+    {{"indicator": "Assets", "value": 0.0}},
+    {{"indicator": "CurrentAssets", "value": 0.0}},
+    {{"indicator": "CashAndEquivalents", "value": 0.0}},
+    {{"indicator": "GrossDebt", "value": 0.0}},
+    {{"indicator": "NetDebt", "value": 0.0}},
+    {{"indicator": "ShareholdersEquity", "value": 0.0}},
+    {{"indicator": "NetRevenue_TTM", "value": 0.0}},
+    {{"indicator": "NetRevenue_Q", "value": 0.0}},
+    {{"indicator": "EBIT_TTM", "value": 0.0}},
+    {{"indicator": "EBIT_Q", "value": 0.0}},
+    {{"indicator": "NetProfit_TTM", "value": 0.0}},
+    {{"indicator": "NetProfit_Q", "value": 0.0}},
+    {{"indicator": "P_E", "value": 0.0}},
+    {{"indicator": "P_B", "value": 0.0}},
+    {{"indicator": "P_EBIT", "value": 0.0}},
+    {{"indicator": "PriceToSales", "value": 0.0}},
+    {{"indicator": "PriceToAssets", "value": 0.0}},
+    {{"indicator": "PriceToWorkingCapital", "value": 0.0}},
+    {{"indicator": "PriceToNetCurrentAssets", "value": 0.0}},
+    {{"indicator": "EV_EBIT", "value": 0.0}},
+    {{"indicator": "EV_EBITDA", "value": 0.0}},
+    {{"indicator": "EPS", "value": 0.0}},
+    {{"indicator": "BVPS", "value": 0.0}},
+    {{"indicator": "GrossMargin", "value": 0.0}},
+    {{"indicator": "EBITMargin", "value": 0.0}},
+    {{"indicator": "NetMargin", "value": 0.0}},
+    {{"indicator": "EBIT_Assets", "value": 0.0}},
+    {{"indicator": "ROE", "value": 0.0}},
+    {{"indicator": "ROIC", "value": 0.0}},
+    {{"indicator": "CurrentRatio", "value": 0.0}},
+    {{"indicator": "GrossDebt_Equity", "value": 0.0}},
+    {{"indicator": "AssetTurnover", "value": 0.0}}
+  ]
 }}
 
 Rules:
-- Every key must exist in indicators.
+- indicators must be a list of objects with keys: indicator, value.
+- Every required indicator name must appear exactly once.
 - Each value must be a number or null.
 - Prefer computing from the monthly window rows. Only call get_companyfacts when a required accounting field is missing.
 """
@@ -86,36 +82,24 @@ Rules:
 MANAGER_MONTHLY_TASK_PROMPT = """Ticker: {ticker}
 Decision date: {date}
 
-Monthly window (last 12 months including decision month):
-{monthly_window_json}
-
-Fundamental analyst indicators (computed using only data available up to Decision date):
-{analyst_report_json}
-
-Previous decision context (if any):
-{previous_decision_json}
+Monthly manager panel (last 12 rows, one row per month, including current month):
+{manager_panel_table}
 
 Decide whether to BUY, HOLD, or SELL.
 
 Output JSON only. No markdown. No extra text. The JSON must follow this schema:
 {{
-  "ticker": "{ticker}",
-  "date": "{date}",
   "recommendation": "HOLD",
   "target_price": 0.0,
-  "justification": "short justification grounded in the monthly window and indicators"
+  "justification": "short justification grounded in the monthly panel and indicators"
 }}
 
 Rules:
-- Use a strict ±5% band around target_price:
-  - BUY if current price < target_price * 0.95
-  - SELL if current price > target_price * 1.05
-  - HOLD only if current price is within 5% of target_price
 - recommendation must be one of BUY, HOLD, SELL
-- target_price must be a number or null; use null only if you truly cannot infer a fair value
+- target_price must be a number
 - justification must mention price vs target_price and at least one indicator
 - never output N/A for recommendation, target_price, or justification
-- if insufficient information, output HOLD with target_price null and explain why
+- if information is weak, output HOLD with a conservative numeric target_price and explain why
 - do not invent data
 """
 

@@ -40,7 +40,6 @@ DEFAULT_TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"
 REQUIRED_INDICATORS = ["Assets", "Liabilities", "Revenues", "NetIncomeLoss"]
 EXPECTED_ANALYST_INDICATORS = expected_indicator_keys()
 CANONICAL_ACTIONS = {"BUY", "SELL", "HOLD"}
-KEEP_BAND = 0.05
 
 
 class CodeInterpreterInput(TypedDict):
@@ -391,9 +390,29 @@ def _build_results_row(
     return out
 
 
+def _build_manager_panel_table(
+    *,
+    fundamental_analyses: List[Dict[str, Any]],
+    ticker: str,
+    max_months: int,
+) -> str:
+    """Render the manager's rolling 12-month panel table for a ticker."""
+    rows = [r for r in fundamental_analyses if str(r.get("ticker", "")).upper() == str(ticker).upper()]
+    if not rows:
+        return "(empty)"
+
+    df = pd.DataFrame(rows).copy()
+    if "date" in df.columns:
+        df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date_dt").drop(columns=["date_dt"], errors="ignore")
+    if max_months is not None and len(df) > max_months:
+        df = df.tail(max_months).reset_index(drop=True)
+    return df.to_string(index=False)
+
+
 def _validate_analyst_output(
     *,
-    raw_output: Dict[str, Any],
+    raw_output: Any,
     ticker: str,
     as_of_date: str,
     window_months_requested: int,
@@ -402,71 +421,58 @@ def _validate_analyst_output(
     base_errors: List[str],
     sources_fallback: List[str],
 ) -> Dict[str, Any]:
-    """Build a strict AnalystOutput object and coerce invalid fields."""
-    errors: List[str] = list(base_errors)
-    notes = raw_output.get("notes", "")
-    if not isinstance(notes, str):
-        notes = str(notes)
-        errors.append("analyst notes was not a string")
-
-    sources = raw_output.get("sources", sources_fallback)
-    if not isinstance(sources, list):
-        sources = list(sources_fallback)
-        errors.append("analyst sources was not a list")
-    sources = [str(s).strip() for s in sources if str(s).strip()]
-    if not sources:
-        sources = list(sources_fallback)
-
-    raw_indicators_any = raw_output.get("indicators", {})
-    if not isinstance(raw_indicators_any, (dict, list)):
-        raw_indicators_any = {}
-        errors.append("analyst indicators was not dict/list")
-    raw_indicators = _indicators_to_map(raw_indicators_any)
-
-    out_indicators: Dict[str, Optional[float]] = {}
-    missing_expected: List[str] = []
-    for k in EXPECTED_ANALYST_INDICATORS:
-        v = raw_indicators.get(k)
-        out_indicators[k] = v
-        if v is None:
-            missing_expected.append(k)
-
-    for k, v in raw_indicators.items():
-        name = str(k).strip()
-        if not name or name in out_indicators:
-            continue
-        out_indicators[name] = _numeric_or_none(v)
-
-    missing_core = [k for k in REQUIRED_INDICATORS if _numeric_or_none(out_indicators.get(k)) is None]
-    if missing_core:
-        errors.append("core indicators missing_or_null: {0}".format(", ".join(missing_core)))
-
-    optional_missing = [
-        k for k in missing_expected if k not in set(REQUIRED_INDICATORS) and k != "last_price"
-    ]
-
-    validated = {
-        "ticker": str(ticker),
-        "as_of_date": str(as_of_date),
-        "window_months_requested": int(window_months_requested),
-        "window_rows_used": int(window_rows_used),
-        "price_used": float(price_used),
-        "indicators": _indicators_to_list(out_indicators),
-        "notes": notes.strip(),
-        "sources": sources,
-        "missing_optional_indicators": optional_missing,
-        "errors": errors,
-    }
-    if errors:
+    """Build a strict paper-style analyst object: {'indicators': [{indicator,value}, ...]}."""
+    _ = (
+        ticker,
+        as_of_date,
+        window_months_requested,
+        window_rows_used,
+        price_used,
+        sources_fallback,
+    )
+    if base_errors:
         print(
-            f"[agent][warn] analyst validation issues ({ticker} {as_of_date}): {len(errors)}",
+            f"[agent][warn] analyst parse/repair issues ({ticker} {as_of_date}): {len(base_errors)}",
             file=sys.stderr,
             flush=True,
         )
-    return validated
+
+    raw_indicators_any: Any = raw_output.get("indicators", []) if isinstance(raw_output, dict) else raw_output
+    if not isinstance(raw_indicators_any, (dict, list)):
+        raw_indicators_any = []
+        print(
+            f"[agent][warn] analyst indicators payload invalid ({ticker} {as_of_date}); using null-filled fallback",
+            file=sys.stderr,
+            flush=True,
+        )
+    raw_indicators = _indicators_to_map(raw_indicators_any)
+
+    out_rows: List[Dict[str, Any]] = []
+    missing_expected: List[str] = []
+    for k in EXPECTED_ANALYST_INDICATORS:
+        v = _numeric_or_none(raw_indicators.get(k))
+        out_rows.append({"indicator": k, "value": v})
+        if v is None:
+            missing_expected.append(k)
+
+    missing_core = [k for k in REQUIRED_INDICATORS if k in set(missing_expected)]
+    if missing_core:
+        print(
+            f"[agent][warn] analyst core indicators missing_or_null ({ticker} {as_of_date}): {', '.join(missing_core)}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if missing_expected:
+        print(
+            f"[agent][warn] analyst expected indicators still null ({ticker} {as_of_date}): {len(missing_expected)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    return {"indicators": out_rows}
 
 
-def _missing_expected_indicators(indicators: Dict[str, Any]) -> List[str]:
+def _missing_expected_indicators(indicators: Any) -> List[str]:
     """Return expected indicators that are missing/null."""
     ind_map = _indicators_to_map(indicators)
     missing: List[str] = []
@@ -485,36 +491,18 @@ def _validate_manager_output(
     window_rows_used: int,
     used_price: float,
 ) -> Dict[str, Any]:
-    """Build a strict ManagerOutput object and coerce invalid fields."""
+    """Build a strict paper-style manager object: recommendation, target_price, justification."""
+    _ = (ticker, date, first_month, window_rows_used, used_price)
     raw_rec = raw_output.get("recommendation") or raw_output.get("action")
     rec = normalize_action(raw_rec)
     target_price = _numeric_or_none(raw_output.get("target_price"))
-    if target_price is not None and target_price <= 0:
-        print(
-            f"[agent][warn] manager validation issue ({ticker} {date}): non-positive target_price coerced to null",
-            file=sys.stderr,
-            flush=True,
-        )
-        target_price = None
-
-    # Standard decision policy: action is determined by target vs current price.
     if target_price is None:
-        standard_rec = "HOLD"
-    else:
-        if used_price < (target_price * (1.0 - KEEP_BAND)):
-            standard_rec = "BUY"
-        elif used_price > (target_price * (1.0 + KEEP_BAND)):
-            standard_rec = "SELL"
-        else:
-            standard_rec = "HOLD"
-
-    if rec != standard_rec:
+        target_price = float(used_price)
         print(
-            f"[agent][warn] manager recommendation normalised ({ticker} {date}): model={rec} standard={standard_rec}",
+            f"[agent][warn] manager validation issue ({ticker} {date}): target_price missing; defaulted to used_price",
             file=sys.stderr,
             flush=True,
         )
-        rec = standard_rec
 
     justification = raw_output.get("justification", "")
     if not isinstance(justification, str) or not justification.strip():
@@ -532,17 +520,9 @@ def _validate_manager_output(
         )
 
     return {
-        "ticker": str(ticker),
-        "date": str(date),
         "recommendation": rec,
         "target_price": target_price,
         "justification": justification.strip(),
-        "meta": {
-            "first_month": bool(first_month),
-            "window_rows_used": int(window_rows_used),
-            "used_price": float(used_price),
-            "keep_band": float(KEEP_BAND),
-        },
     }
 
 
@@ -693,7 +673,7 @@ def get_date_range(cli_test_start: Optional[str], cli_test_end: Optional[str]) -
     """Resolve test_start and test_end from CLI args, then config, then defaults."""
     cfg = load_experiment_config()
     
-    test_start = cli_test_start or str(cfg.get("test_start", "2025-01-02"))
+    test_start = cli_test_start or str(cfg.get("test_start", "2024-01-02"))
     test_end = cli_test_end or str(cfg.get("test_end", "2025-12-31"))
     
     return test_start, test_end
@@ -706,7 +686,7 @@ async def run_one_ticker(
     test_start: str,
     test_end: str,
     max_months: int = 12,
-    reflection: bool = False,
+    reflection: bool = True,
     reflection_max_rounds: int = 1,
     out_dir: Path = Path("results") / "experiments" / "monthly_agent_workflow",
 ) -> None:
@@ -754,12 +734,7 @@ async def run_one_ticker(
 
         # Analyst step with strict parse/repair/validation
         analyst_result = await Runner.run(analyst, analyst_prompt(ticker=ticker, as_of_date=date))
-        analyst_schema = (
-            '{ "ticker": "TSLA", "as_of_date": "2025-01-02", "window_months_requested": 12, '
-            '"window_rows_used": 1, "price_used": 123.45, '
-            '"indicators": [{"indicator":"Assets","value":null},{"indicator":"Liabilities","value":null}], '
-            '"notes": "...", "sources": ["get_monthly_window"], "errors": [] }'
-        )
+        analyst_schema = '{ "indicators": [{"indicator":"Assets","value":null}] }'
         analyst_parse_errors: List[str] = []
         analyst_raw = parse_json_safe(analyst_result.final_output, fallback={}, label="analyst_output")
         if not analyst_raw:
@@ -831,7 +806,11 @@ async def run_one_ticker(
                 base_map = _indicators_to_map(analyst_json.get("indicators", {}))
                 reflected_map = _indicators_to_map(reflected_raw.get("indicators", {}))
                 if not reflected_map:
-                    analyst_json["errors"].append(f"reflection round {rr + 1}: reflected indicators missing")
+                    print(
+                        f"[agent][warn] reflection round {rr + 1} returned no indicators ({ticker} {date})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     continue
 
                 filled = 0
@@ -843,18 +822,16 @@ async def run_one_ticker(
                         base_map[k] = v
                         filled += 1
                 analyst_json["indicators"] = _indicators_to_list(base_map)
-
-                analyst_json["errors"].append(
-                    f"reflection round {rr + 1}: requested={len(missing)} filled={filled}"
+                print(
+                    f"[agent][debug] reflection round {rr + 1} requested={len(missing)} filled={filled} ({ticker} {date})",
+                    flush=True,
                 )
 
-            # Refresh optional-missing field after reflection merges.
-            analyst_json["missing_optional_indicators"] = [
-                k
-                for k in _missing_expected_indicators(analyst_json.get("indicators", {}))
-                if k not in set(REQUIRED_INDICATORS) and k != "last_price"
-            ]
-            analyst_json["reflection_rounds_used"] = int(reflection_used)
+            if reflection_used:
+                print(
+                    f"[agent][debug] reflection rounds used={reflection_used} ({ticker} {date})",
+                    flush=True,
+                )
 
         ind_map_for_count = _indicators_to_map(analyst_json.get("indicators", {}))
         if any(_numeric_or_none(ind_map_for_count.get(k)) is None for k in REQUIRED_INDICATORS):
@@ -875,32 +852,27 @@ async def run_one_ticker(
             )
         )
 
-        monthly_window_text = (
-            pd.DataFrame(monthly_window_rows).to_string(index=False)
-            if monthly_window_rows
-            else "(empty)"
+        manager_panel_text = _build_manager_panel_table(
+            fundamental_analyses=fundamental_analyses,
+            ticker=ticker,
+            max_months=max_months,
         )
 
         manager_prompt = MANAGER_MONTHLY_TASK_PROMPT.format(
             ticker=ticker,
             date=date,
-            monthly_window_json=monthly_window_text,
-            analyst_report_json=json.dumps(analyst_json, indent=2),
-            previous_decision_json=json.dumps(previous_decision, indent=2),
+            manager_panel_table=manager_panel_text,
         )
 
         manager_result = await Runner.run(manager, manager_prompt)
-        manager_schema = (
-            '{ "ticker": "TSLA", "date": "2025-01-02", '
-            '"recommendation": "HOLD", "target_price": null, "justification": "..." }'
-        )
+        manager_schema = '{ "recommendation": "HOLD", "target_price": 123.45, "justification": "..." }'
         manager_raw = parse_json_safe(manager_result.final_output, fallback={}, label="manager_output")
         if not manager_raw:
             manager_raw = await repair_to_json(
                 manager,
                 str(manager_result.final_output),
                 manager_schema,
-                fallback={"recommendation": "HOLD", "target_price": None, "justification": "repair_failed"},
+                fallback={"recommendation": "HOLD", "target_price": float(price_today), "justification": "repair_failed"},
             )
             if not manager_raw:
                 print(f"[agent][warn] manager output invalid after repair ({ticker} {date})", file=sys.stderr, flush=True)
@@ -1004,8 +976,16 @@ async def main() -> None:
     parser.add_argument("--test_end", type=str, default=None, help="Test end date (YYYY-MM-DD)")
     parser.add_argument(
         "--reflection",
+        dest="reflection",
         action="store_true",
-        help="Enable paper-style reflection loop for missing analyst indicators.",
+        default=True,
+        help="Enable paper-style reflection loop for missing analyst indicators (default: enabled).",
+    )
+    parser.add_argument(
+        "--no_reflection",
+        dest="reflection",
+        action="store_false",
+        help="Disable analyst reflection loop.",
     )
     parser.add_argument(
         "--reflection_max_rounds",

@@ -39,6 +39,9 @@ python run_agent_monthly.py \
   --out_dir results/experiments/monthly_agent_workflow
 ```
 
+Notes:
+- Reflection is enabled by default. Use `--no_reflection` to disable it.
+
 Expected output structure:
 
 - `results/experiments/monthly_agent_workflow/<TICKER>_output_<timestamp>.json`
