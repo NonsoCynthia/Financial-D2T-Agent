@@ -29,7 +29,7 @@ Thiago style monthly fundamental-analysis workflow for US equities.
 Run monthly agent outputs (one final file per ticker plus Thiago-style step artifacts):
 
 ```bash
-python run_agent_monthly.py \
+python agent_monthly.py \
   --tickers "TSLA,AMZN,NIO,MSFT,AAPL,GOOG,NFLX,COIN" \
   --max_months 12 \
   --model gpt-4.1-mini \

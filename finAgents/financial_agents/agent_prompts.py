@@ -82,24 +82,25 @@ Rules:
 MANAGER_MONTHLY_TASK_PROMPT = """Ticker: {ticker}
 Decision date: {date}
 
-Monthly manager panel (last 12 rows, one row per month, including current month):
-{manager_panel_table}
+Monthly manager time series (last 12 rows, one row per month, including current month).
+Each row contains market context, analyst indicators, and prior manager decision context:
+{manager_timeseries_json}
 
 Decide whether to BUY, HOLD, or SELL.
 
 Output JSON only. No markdown. No extra text. The JSON must follow this schema:
 {{
-  "recommendation": "HOLD",
+  "decision": "HOLD",
   "target_price": 0.0,
-  "justification": "short justification grounded in the monthly panel and indicators"
+  "rationale": "short rationale grounded in the monthly panel and indicators"
 }}
 
 Rules:
-- recommendation must be one of BUY, HOLD, SELL
-- target_price must be a number
-- justification must mention price vs target_price and at least one indicator
-- never output N/A for recommendation, target_price, or justification
-- if information is weak, output HOLD with a conservative numeric target_price and explain why
+- decision must be one of BUY, HOLD, SELL
+- target_price must be a number or null
+- rationale must mention price vs target_price and at least one indicator
+- never output N/A for decision, target_price, or rationale
+- if information is weak, output HOLD and explain why in rationale
 - do not invent data
 """
 

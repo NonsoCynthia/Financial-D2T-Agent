@@ -17,6 +17,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from finAgents.financial_agents.indicator_mapping import (
+    EVAL_INDICATORS,
+    canonical_month,
+    canonical_ticker,
+    indicators_to_canonical_map,
+    pick_gold_column,
+)
+
 
 def normalize_action(x: Any) -> str:
     """Canonicalise manager action to BUY/SELL/HOLD."""
@@ -136,6 +144,41 @@ def load_gold_monthly_panel(path: Optional[Path] = None) -> pd.DataFrame:
     return _first_trading_day_per_month(df, date_col="date")
 
 
+def build_gold_indicator_long(
+    gold: pd.DataFrame, indicators: List[str]
+) -> tuple[pd.DataFrame, Dict[str, Optional[str]], List[str]]:
+    """
+    Build long-form gold indicator table with explicit mapping diagnostics.
+
+    Returns:
+    - long dataframe columns: ticker, month, indicator, gold
+    - mapping used: indicator -> chosen gold column or None
+    - indicators with no usable gold column
+    """
+    rows: List[Dict[str, Any]] = []
+    mapping_used: Dict[str, Optional[str]] = {}
+    missing_gold: List[str] = []
+
+    for ind in indicators:
+        col = pick_gold_column(ind, list(gold.columns))
+        mapping_used[ind] = col
+        if col is None:
+            missing_gold.append(ind)
+            continue
+        tmp = gold[["ticker", "month", col]].rename(columns={col: "gold"}).copy()
+        tmp["indicator"] = ind
+        tmp["gold"] = pd.to_numeric(tmp["gold"], errors="coerce")
+        rows.extend(tmp.to_dict(orient="records"))
+
+    long_df = pd.DataFrame(rows)
+    if not long_df.empty:
+        long_df["ticker"] = long_df["ticker"].map(canonical_ticker)
+        long_df["month"] = long_df["month"].astype(str).str.strip()
+        long_df["indicator"] = long_df["indicator"].astype(str).str.strip()
+        long_df = long_df.dropna(subset=["gold"]).reset_index(drop=True)
+    return long_df, mapping_used, missing_gold
+
+
 def _detect_mode_from_folder(folder: Path) -> str:
     """Detect prediction mode by filename pattern."""
     any_workflow = any(folder.glob("*_workflow_output_*.json"))
@@ -157,13 +200,13 @@ def load_predictions_agent(folder: Path) -> pd.DataFrame:
     - *_output_*.json
 
     Expected structure:
-    - payload["outputs"][i]["analyst"]["indicators"] as a dict
+    - payload["outputs"][i]["analyst"]["indicators"] as list[{indicator,value}]
     """
     rows: List[Dict[str, Any]] = []
 
     for p in sorted(folder.glob("*_output_*.json")):
         payload = json.loads(p.read_text(encoding="utf-8"))
-        ticker = str(payload.get("ticker", "")).upper().strip()
+        ticker = canonical_ticker(payload.get("ticker", ""))
         outputs = payload.get("outputs", [])
 
         if not isinstance(outputs, list):
@@ -172,19 +215,8 @@ def load_predictions_agent(folder: Path) -> pd.DataFrame:
         for item in outputs:
             date = item.get("date")
             analyst = item.get("analyst", {}) or {}
-            indicators_raw = analyst.get("indicators", {}) or {}
-
-            indicators: Dict[str, Any] = {}
-            if isinstance(indicators_raw, dict):
-                indicators = indicators_raw
-            elif isinstance(indicators_raw, list):
-                for elem in indicators_raw:
-                    if not isinstance(elem, dict):
-                        continue
-                    name = str(elem.get("indicator") or elem.get("name") or "").strip()
-                    if not name:
-                        continue
-                    indicators[name] = elem.get("value")
+            indicators_raw = analyst.get("indicators", []) or []
+            indicators = indicators_to_canonical_map(indicators_raw)
 
             if not date or not indicators:
                 continue
@@ -193,12 +225,12 @@ def load_predictions_agent(folder: Path) -> pd.DataFrame:
             if pd.isna(dt):
                 continue
 
-            month = str(dt.to_period("M"))
+            month = canonical_month(dt)
 
             for k, v in indicators.items():
                 rows.append(
                     {
-                        "ticker": ticker,
+                        "ticker": canonical_ticker(ticker),
                         "date": dt.strftime("%Y-%m-%d"),
                         "month": month,
                         "indicator": str(k).strip(),
@@ -210,7 +242,7 @@ def load_predictions_agent(folder: Path) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df["ticker"] = df["ticker"].map(canonical_ticker)
     df["pred_value"] = pd.to_numeric(df["pred_value"], errors="coerce")
     df["indicator"] = df["indicator"].astype(str).str.strip()
 
@@ -228,13 +260,13 @@ def load_manager_actions_agent(folder: Path) -> pd.DataFrame:
 
     Expected structure:
     - item["price"]
-    - item["manager"]["action"] or item["manager"]["recommendation"]
+    - item["manager"]["decision"] (or legacy recommendation/action)
     """
     rows: List[Dict[str, Any]] = []
 
     for p in sorted(folder.glob("*_output_*.json")):
         payload = json.loads(p.read_text(encoding="utf-8"))
-        ticker = str(payload.get("ticker", "")).upper().strip()
+        ticker = canonical_ticker(payload.get("ticker", ""))
         outputs = payload.get("outputs", [])
 
         if not isinstance(outputs, list):
@@ -252,13 +284,15 @@ def load_manager_actions_agent(folder: Path) -> pd.DataFrame:
             if pd.isna(dt):
                 continue
 
-            action = normalize_action(manager.get("action") or manager.get("recommendation"))
+            action = normalize_action(
+                manager.get("decision") or manager.get("action") or manager.get("recommendation")
+            )
 
             rows.append(
                 {
-                    "ticker": ticker,
+                    "ticker": canonical_ticker(ticker),
                     "date": dt.strftime("%Y-%m-%d"),
-                    "month": str(dt.to_period("M")),
+                    "month": canonical_month(dt),
                     "price": pd.to_numeric(price, errors="coerce"),
                     "action": action if action in {"BUY", "SELL", "HOLD"} else "HOLD",
                 }
@@ -268,7 +302,7 @@ def load_manager_actions_agent(folder: Path) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df["ticker"] = df["ticker"].map(canonical_ticker)
     df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date_dt"]).sort_values(["ticker", "date_dt"]).reset_index(drop=True)
     return df.drop(columns=["date_dt"])
@@ -282,7 +316,7 @@ def load_manager_actions_workflow(folder: Path) -> pd.DataFrame:
     - *_workflow_output_*.json
 
     Expected structure:
-    - payload["outputs"][i]["manager"]["recommendation"] (buy|keep|sell)
+    - payload["outputs"][i]["manager"]["decision"] (BUY|HOLD|SELL)
     - payload["outputs"][i]["date"]
     There is no "price" stored in workflow output, so we will join gold prices later.
     """
@@ -290,7 +324,7 @@ def load_manager_actions_workflow(folder: Path) -> pd.DataFrame:
 
     for p in sorted(folder.glob("*_workflow_output_*.json")):
         payload = json.loads(p.read_text(encoding="utf-8"))
-        ticker = str(payload.get("ticker", "")).upper().strip()
+        ticker = canonical_ticker(payload.get("ticker", ""))
         outputs = payload.get("outputs", [])
 
         if not isinstance(outputs, list):
@@ -307,13 +341,15 @@ def load_manager_actions_workflow(folder: Path) -> pd.DataFrame:
             if pd.isna(dt):
                 continue
 
-            action = normalize_action(manager.get("action") or manager.get("recommendation"))
+            action = normalize_action(
+                manager.get("decision") or manager.get("action") or manager.get("recommendation")
+            )
 
             rows.append(
                 {
-                    "ticker": ticker,
+                    "ticker": canonical_ticker(ticker),
                     "date": dt.strftime("%Y-%m-%d"),
-                    "month": str(dt.to_period("M")),
+                    "month": canonical_month(dt),
                     "action": action,
                 }
             )
@@ -322,7 +358,7 @@ def load_manager_actions_workflow(folder: Path) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df["ticker"] = df["ticker"].map(canonical_ticker)
     df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date_dt"]).sort_values(["ticker", "date_dt"]).reset_index(drop=True)
     return df.drop(columns=["date_dt"])
@@ -485,10 +521,11 @@ def main() -> None:
     cfg = load_experiment_config()
     rf = float(cfg.get("risk_free_rate", 0.0))
     alpha = float(args.alpha)
+    stage1_indicators = list(EVAL_INDICATORS)
 
     gold = load_gold_monthly_panel(Path(args.gold_csv))
-    gold["month"] = pd.to_datetime(gold["date"], errors="coerce").dt.to_period("M").astype(str)
-    gold["ticker"] = gold["ticker"].astype(str).str.upper().str.strip()
+    gold["month"] = gold["date"].map(canonical_month)
+    gold["ticker"] = gold["ticker"].map(canonical_ticker)
 
     if "adj_close" in gold.columns:
         gold["last_price"] = pd.to_numeric(gold["adj_close"], errors="coerce")
@@ -513,10 +550,22 @@ def main() -> None:
             print(f"No agent predictions found in {pred_dir}")
             return
 
-        stage1_indicators = ["Revenues", "NetIncomeLoss", "Assets", "Liabilities", "last_price"]
-        for col in stage1_indicators:
-            if col in gold.columns:
-                gold[col] = pd.to_numeric(gold[col], errors="coerce")
+        gold_long, mapping_used, missing_gold = build_gold_indicator_long(gold, stage1_indicators)
+        print("Stage 1 indicator mapping (gold column per indicator)")
+        for ind in stage1_indicators:
+            col = mapping_used.get(ind)
+            print(f"- {ind}: {col if col is not None else 'MISSING'}")
+        if missing_gold:
+            print()
+            print(
+                "Stage 1 warning: missing gold columns/mappings for "
+                f"{len(missing_gold)} indicator(s): {missing_gold}"
+            )
+        if gold_long.empty:
+            raise ValueError(
+                "Stage 1 aborted: no mapped gold indicators available. "
+                "Add gold columns or extend GOLD_COLUMN_CANDIDATES mapping."
+            )
 
         overall_rows: List[Dict[str, Any]] = []
         per_ticker_rows: List[Dict[str, Any]] = []
@@ -524,10 +573,10 @@ def main() -> None:
         scorer = args.stage1
 
         for ind in stage1_indicators:
-            if ind not in gold.columns:
+            g = gold_long[gold_long["indicator"] == ind][["ticker", "month", "gold"]].copy()
+            if g.empty:
                 continue
 
-            g = gold[["ticker", "month", ind]].rename(columns={ind: "gold"}).copy()
             p = (
                 pred[pred["indicator"] == ind][["ticker", "month", "pred_value"]]
                 .rename(columns={"pred_value": "pred"})
@@ -578,7 +627,12 @@ def main() -> None:
             per_ticker_df = per_ticker_df.reset_index(drop=True)
 
         print("Stage 1 (Indicator accuracy). Overall (pooled across tickers)")
-        print(overall_df.to_string(index=False) if not overall_df.empty else "No indicator overlaps found.")
+        if overall_df.empty:
+            raise ValueError(
+                "Stage 1 aborted: no prediction/gold overlaps after mapping and key alignment. "
+                "Check ticker/month/indicator canonicalization and mappings."
+            )
+        print(overall_df.to_string(index=False))
         if scorer == "thiago" and not overall_df.empty:
             print(f"Stage 1 overall MAE (Thiago): {float(overall_df['mae'].mean()):.6f}")
 
@@ -594,6 +648,8 @@ def main() -> None:
             print(f"No workflow actions found in {pred_dir}")
             return
 
+        if "last_price" not in gold.columns:
+            raise ValueError("Gold panel is missing price column required for workflow Stage 2 (need adj_close or price).")
         gold_price = gold[["ticker", "month", "last_price"]].rename(columns={"last_price": "price"}).copy()
         actions = actions.merge(gold_price, on=["ticker", "month"], how="left")
 

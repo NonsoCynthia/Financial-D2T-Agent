@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,13 +19,24 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import yfinance as yf
 
+# Ensure local package imports work when script is launched outside repo root.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from finAgents.financial_agents.indicator_mapping import (
+    canonical_month,
+    canonical_ticker,
+    indicators_to_canonical_map,
+)
+
 
 TARGET_KEYS = [
     "Assets",
     "CashAndEquivalents",
-    "NetRevenue",
-    "EBIT",
-    "NetProfit",
+    "NetRevenue_TTM",
+    "EBIT_TTM",
+    "NetProfit_TTM",
     "EPS",
     "P_E",
     "P_B",
@@ -141,9 +153,9 @@ def fetch_yahoo_snapshot(symbol: str, as_of_date: str) -> Dict[str, Optional[flo
     return {
         "Assets": assets,
         "CashAndEquivalents": cash,
-        "NetRevenue": revenue,
-        "EBIT": ebit,
-        "NetProfit": net_profit,
+        "NetRevenue_TTM": revenue,
+        "EBIT_TTM": ebit,
+        "NetProfit_TTM": net_profit,
         "EPS": eps,
         "P_E": pe,
         "P_B": pb,
@@ -152,17 +164,11 @@ def fetch_yahoo_snapshot(symbol: str, as_of_date: str) -> Dict[str, Optional[flo
 
 
 def _extract_pred_map(indicators: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    return {
-        "Assets": _pick_numeric(indicators, ["Assets"]),
-        "CashAndEquivalents": _pick_numeric(indicators, ["CashAndEquivalents"]),
-        "NetRevenue": _pick_numeric(indicators, ["NetRevenue", "NetRevenue_TTM", "NetRevenue_Q", "Revenues"]),
-        "EBIT": _pick_numeric(indicators, ["EBIT", "EBIT_TTM", "EBIT_Q", "OperatingIncomeLoss"]),
-        "NetProfit": _pick_numeric(indicators, ["NetProfit", "NetProfit_TTM", "NetProfit_Q", "NetIncomeLoss"]),
-        "EPS": _pick_numeric(indicators, ["EPS", "EarningsPerShareBasic"]),
-        "P_E": _pick_numeric(indicators, ["P_E", "PE"]),
-        "P_B": _pick_numeric(indicators, ["P_B", "PB"]),
-        "last_price": _pick_numeric(indicators, ["last_price", "price", "price_close", "adj_close"]),
-    }
+    m = indicators_to_canonical_map(indicators)
+    out: Dict[str, Optional[float]] = {}
+    for k in TARGET_KEYS:
+        out[k] = _to_float(m.get(k))
+    return out
 
 
 def detect_mode(folder: Path) -> str:
@@ -176,13 +182,13 @@ def detect_mode(folder: Path) -> str:
 def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List[str]]) -> List[Dict[str, Any]]:
     month = month.strip()
     out: List[Dict[str, Any]] = []
-    keep = set([t.upper().strip() for t in (tickers or []) if t.strip()])
+    keep = set([canonical_ticker(t) for t in (tickers or []) if str(t).strip()])
 
     if mode == "workflow":
         files = sorted(folder.glob("*_workflow_output_*.json"))
         for p in files:
             payload = json.loads(p.read_text(encoding="utf-8"))
-            ticker = str(payload.get("ticker", "")).upper().strip()
+            ticker = canonical_ticker(payload.get("ticker", ""))
             if keep and ticker not in keep:
                 continue
             for item in payload.get("outputs", []):
@@ -190,17 +196,17 @@ def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List
                 if not d:
                     continue
                 dt = pd.to_datetime(d, errors="coerce")
-                if pd.isna(dt) or str(dt.to_period("M")) != month:
+                if pd.isna(dt) or canonical_month(dt) != month:
                     continue
-                indicators = ((item.get("indicator_analysis") or {}).get("values") or {})
-                if not isinstance(indicators, dict):
+                indicators_raw = ((item.get("indicator_analysis") or {}).get("values") or {})
+                if not isinstance(indicators_raw, (dict, list)):
                     continue
-                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "pred": _extract_pred_map(indicators)})
+                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators_raw)})
     else:
         files = sorted(folder.glob("*_output_*.json"))
         for p in files:
             payload = json.loads(p.read_text(encoding="utf-8"))
-            ticker = str(payload.get("ticker", "")).upper().strip()
+            ticker = canonical_ticker(payload.get("ticker", ""))
             if keep and ticker not in keep:
                 continue
             for item in payload.get("outputs", []):
@@ -208,12 +214,12 @@ def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List
                 if not d:
                     continue
                 dt = pd.to_datetime(d, errors="coerce")
-                if pd.isna(dt) or str(dt.to_period("M")) != month:
+                if pd.isna(dt) or canonical_month(dt) != month:
                     continue
-                indicators = ((item.get("analyst") or {}).get("indicators") or {})
-                if not isinstance(indicators, dict):
+                indicators_raw = ((item.get("analyst") or {}).get("indicators") or {})
+                if not isinstance(indicators_raw, (dict, list)):
                     continue
-                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "pred": _extract_pred_map(indicators)})
+                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators_raw)})
     return out
 
 

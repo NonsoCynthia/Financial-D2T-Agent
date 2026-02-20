@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class Recommendation(str, Enum):
-    """Thiago style manager recommendations."""
+    """manager recommendations."""
 
     buy = "BUY"
     keep = "KEEP"

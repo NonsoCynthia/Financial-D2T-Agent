@@ -3,7 +3,7 @@ Monthly agent runner.
 
 Creates two MCP-backed agents (analyst + manager), slides a 12-month window per
 ticker/date, and saves one JSON file per ticker with analyst indicators plus a
-manager recommendation/target. Use with run_eval_monthly.py for scoring.
+manager decision/target. Use with run_eval_monthly.py for scoring.
 """
 
 import argparse
@@ -35,10 +35,11 @@ from finAgents.financial_agents.agent_prompts import (
     analyst_prompt,
 )
 from finAgents.financial_agents.financial_analyst import expected_indicator_keys
+from finAgents.financial_agents.indicator_mapping import canonical_month, canonical_ticker
 
 DEFAULT_TICKERS = ["TSLA", "AMZN", "NIO", "MSFT", "AAPL", "GOOG", "NFLX", "COIN"]
-REQUIRED_INDICATORS = ["Assets", "Liabilities", "Revenues", "NetIncomeLoss"]
 EXPECTED_ANALYST_INDICATORS = expected_indicator_keys()
+REQUIRED_INDICATORS = list(EXPECTED_ANALYST_INDICATORS)
 CANONICAL_ACTIONS = {"BUY", "SELL", "HOLD"}
 
 
@@ -371,8 +372,9 @@ def _build_results_row(
     row = _row_for_decision_date(monthly_window_rows, decision_date)
     out: Dict[str, Any] = dict(row) if isinstance(row, dict) else {}
 
-    out["ticker"] = str(ticker)
+    out["ticker"] = canonical_ticker(ticker)
     out["date"] = str(decision_date)
+    out["month"] = canonical_month(decision_date)
     out["month_price"] = float(month_price)
 
     indicator_map = _indicators_to_map(analyst_indicators)
@@ -384,30 +386,24 @@ def _build_results_row(
 
     # Keep this explicit and consistent for manager decision context.
     out["last_price"] = float(month_price)
-    out["PREVIOUS_JUSTIFICATION"] = previous_decision.get("Justification", "N/A")
-    out["PREVIOUS_TARGET_PRICE"] = previous_decision.get("Target Price", "N/A")
-    out["PREVIOUS_RECOMMENDATION"] = previous_decision.get("Recommendation", "N/A")
+    out["PREVIOUS_DECISION"] = previous_decision.get("decision", "N/A")
+    out["PREVIOUS_TARGET_PRICE"] = previous_decision.get("target_price", "N/A")
+    out["PREVIOUS_RATIONALE"] = previous_decision.get("rationale", "N/A")
     return out
 
 
-def _build_manager_panel_table(
+def _build_manager_timeseries_json(
     *,
-    fundamental_analyses: List[Dict[str, Any]],
-    ticker: str,
+    manager_timeseries_rows: List[Dict[str, Any]],
     max_months: int,
 ) -> str:
-    """Render the manager's rolling 12-month panel table for a ticker."""
-    rows = [r for r in fundamental_analyses if str(r.get("ticker", "")).upper() == str(ticker).upper()]
+    """Render manager input as rolling monthly JSON timeseries rows."""
+    rows = list(manager_timeseries_rows)
     if not rows:
-        return "(empty)"
-
-    df = pd.DataFrame(rows).copy()
-    if "date" in df.columns:
-        df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.sort_values("date_dt").drop(columns=["date_dt"], errors="ignore")
-    if max_months is not None and len(df) > max_months:
-        df = df.tail(max_months).reset_index(drop=True)
-    return df.to_string(index=False)
+        return "[]"
+    if max_months is not None and len(rows) > max_months:
+        rows = rows[-int(max_months):]
+    return json.dumps(rows, indent=2)
 
 
 def _validate_analyst_output(
@@ -473,11 +469,12 @@ def _validate_analyst_output(
 
 
 def _missing_expected_indicators(indicators: Any) -> List[str]:
-    """Return expected indicators that are missing/null."""
+    """Return expected indicators that are still missing by non-null coverage."""
     ind_map = _indicators_to_map(indicators)
+    produced_non_null = {k for k, v in ind_map.items() if _numeric_or_none(v) is not None}
     missing: List[str] = []
     for k in EXPECTED_ANALYST_INDICATORS:
-        if _numeric_or_none(ind_map.get(k)) is None:
+        if k not in produced_non_null:
             missing.append(k)
     return missing
 
@@ -491,38 +488,32 @@ def _validate_manager_output(
     window_rows_used: int,
     used_price: float,
 ) -> Dict[str, Any]:
-    """Build a strict paper-style manager object: recommendation, target_price, justification."""
+    """Build strict manager output without overriding decision policy."""
     _ = (ticker, date, first_month, window_rows_used, used_price)
-    raw_rec = raw_output.get("recommendation") or raw_output.get("action")
-    rec = normalize_action(raw_rec)
+    raw_rec = raw_output.get("decision") or raw_output.get("recommendation") or raw_output.get("action")
+    dec = normalize_action(raw_rec)
     target_price = _numeric_or_none(raw_output.get("target_price"))
-    if target_price is None:
-        target_price = float(used_price)
+    rationale = raw_output.get("rationale")
+    if rationale is None:
+        rationale = raw_output.get("justification")
+    if not isinstance(rationale, str) or not rationale.strip():
+        rationale = "Insufficient evidence provided."
         print(
-            f"[agent][warn] manager validation issue ({ticker} {date}): target_price missing; defaulted to used_price",
-            file=sys.stderr,
-            flush=True,
-        )
-
-    justification = raw_output.get("justification", "")
-    if not isinstance(justification, str) or not justification.strip():
-        justification = "Insufficient evidence for stronger action; defaulting to HOLD."
-        print(
-            f"[agent][warn] manager validation issue ({ticker} {date}): empty justification replaced",
+            f"[agent][warn] manager validation issue ({ticker} {date}): empty rationale replaced",
             file=sys.stderr,
             flush=True,
         )
     if raw_rec is None or str(raw_rec).strip().upper() not in {"BUY", "SELL", "HOLD", "KEEP"}:
         print(
-            f"[agent][warn] manager validation issue ({ticker} {date}): recommendation normalised to {rec}",
+            f"[agent][warn] manager validation issue ({ticker} {date}): decision normalised to {dec}",
             file=sys.stderr,
             flush=True,
         )
 
     return {
-        "recommendation": rec,
+        "decision": dec,
         "target_price": target_price,
-        "justification": justification.strip(),
+        "rationale": rationale.strip(),
     }
 
 
@@ -699,6 +690,7 @@ async def run_one_ticker(
     ticker_dir.mkdir(parents=True, exist_ok=True)
 
     fundamental_analyses: List[Dict[str, Any]] = []
+    manager_timeseries_rows: List[Dict[str, Any]] = []
     manager_decisions: List[Dict[str, Any]] = []
     outputs: List[Dict[str, Any]] = []
     action_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
@@ -730,8 +722,6 @@ async def run_one_ticker(
             monthly_window_rows = monthly_window_df.to_dict(orient="records")
         window_rows_used = int(len(monthly_window_rows))
 
-        compute_errors: List[str] = []
-
         # Analyst step with strict parse/repair/validation
         analyst_result = await Runner.run(analyst, analyst_prompt(ticker=ticker, as_of_date=date))
         analyst_schema = '{ "indicators": [{"indicator":"Assets","value":null}] }'
@@ -749,18 +739,18 @@ async def run_one_ticker(
                 analyst_parse_errors.append("analyst output repair failed; fallback object used")
                 print(f"[agent][warn] analyst output invalid after repair ({ticker} {date})", file=sys.stderr, flush=True)
 
-        prev_for_ticker = [d for d in manager_decisions if d.get("stock_id") == ticker]
+        prev_for_ticker = [d for d in manager_decisions if d.get("stock_id") == canonical_ticker(ticker)]
         previous_decision = (
             {
-                "Justification": prev_for_ticker[-1]["justification"],
-                "Target Price": prev_for_ticker[-1]["target_price"],
-                "Recommendation": prev_for_ticker[-1]["recommendation"],
+                "decision": prev_for_ticker[-1]["decision"],
+                "target_price": prev_for_ticker[-1]["target_price"],
+                "rationale": prev_for_ticker[-1]["rationale"],
             }
             if prev_for_ticker
             else {
-                "Justification": "N/A",
-                "Target Price": "N/A",
-                "Recommendation": "N/A",
+                "decision": "N/A",
+                "target_price": "N/A",
+                "rationale": "N/A",
             }
         )
 
@@ -771,22 +761,38 @@ async def run_one_ticker(
             window_months_requested=int(max_months),
             window_rows_used=window_rows_used,
             price_used=price_today,
-            base_errors=analyst_parse_errors + compute_errors,
+            base_errors=analyst_parse_errors,
             sources_fallback=["get_monthly_window", "get_companyfacts"],
         )
 
-        # Paper-faithful reflection: if expected indicators are missing, re-call analyst with explicit feedback.
+        reflection_debug: Dict[str, Any] = {
+            "ticker": canonical_ticker(ticker),
+            "date": date,
+            "month": canonical_month(date),
+            "reflection_enabled": bool(reflection),
+            "reflection_max_rounds": int(reflection_max_rounds),
+            "missing_before": [],
+            "rounds": [],
+            "missing_final": [],
+        }
+
+        # Paper-faithful reflection loop:
+        # missing = expected_indicator_keys - produced_non_null_keys
+        current_indicators = list(analyst_json.get("indicators", []))
+        reflection_debug["missing_before"] = _missing_expected_indicators(current_indicators)
         reflection_used = 0
         if reflection and int(reflection_max_rounds) > 0:
             for rr in range(int(reflection_max_rounds)):
-                missing = _missing_expected_indicators(analyst_json.get("indicators", {}))
+                missing = _missing_expected_indicators(current_indicators)
                 if not missing:
                     break
 
                 reflection_used += 1
                 reflection_prompt = (
                     analyst_prompt(ticker=ticker, as_of_date=date)
-                    + "\n\nFeedback: Compute ONLY the following missing indicators and return full JSON: "
+                    + "\n\nFeedback: ONLY compute the following missing indicators and output JSON only in this schema: "
+                    + '{"indicators":[{"indicator":"<name>","value":<number_or_null>}]}'
+                    + ". Do not include indicators that are not listed below. Missing list: "
                     + json.dumps(missing)
                 )
                 reflected_result = await Runner.run(analyst, reflection_prompt)
@@ -803,7 +809,7 @@ async def run_one_ticker(
                         fallback={},
                     )
 
-                base_map = _indicators_to_map(analyst_json.get("indicators", {}))
+                base_map = _indicators_to_map(current_indicators)
                 reflected_map = _indicators_to_map(reflected_raw.get("indicators", {}))
                 if not reflected_map:
                     print(
@@ -811,19 +817,36 @@ async def run_one_ticker(
                         file=sys.stderr,
                         flush=True,
                     )
+                    reflection_debug["rounds"].append(
+                        {
+                            "round": int(rr + 1),
+                            "requested_missing": list(missing),
+                            "filled_indicator_names": [],
+                            "missing_after_round": list(missing),
+                        }
+                    )
                     continue
 
-                filled = 0
+                filled_names: List[str] = []
                 for k in missing:
                     v = _numeric_or_none(reflected_map.get(k))
                     if v is None:
                         continue
                     if _numeric_or_none(base_map.get(k)) is None:
                         base_map[k] = v
-                        filled += 1
-                analyst_json["indicators"] = _indicators_to_list(base_map)
+                        filled_names.append(k)
+                current_indicators = _indicators_to_list(base_map)
+                missing_after = _missing_expected_indicators(current_indicators)
+                reflection_debug["rounds"].append(
+                    {
+                        "round": int(rr + 1),
+                        "requested_missing": list(missing),
+                        "filled_indicator_names": list(filled_names),
+                        "missing_after_round": list(missing_after),
+                    }
+                )
                 print(
-                    f"[agent][debug] reflection round {rr + 1} requested={len(missing)} filled={filled} ({ticker} {date})",
+                    f"[agent][debug] reflection round {rr + 1} requested={len(missing)} filled={len(filled_names)} ({ticker} {date})",
                     flush=True,
                 )
 
@@ -832,6 +855,15 @@ async def run_one_ticker(
                     f"[agent][debug] reflection rounds used={reflection_used} ({ticker} {date})",
                     flush=True,
                 )
+        analyst_json["indicators"] = list(current_indicators)
+        reflection_debug["missing_final"] = _missing_expected_indicators(analyst_json.get("indicators", []))
+        if reflection_debug["missing_final"]:
+            print(
+                f"[agent][warn] reflection ended with missing indicators ({ticker} {date}): "
+                f"{reflection_debug['missing_final']}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         ind_map_for_count = _indicators_to_map(analyst_json.get("indicators", {}))
         if any(_numeric_or_none(ind_map_for_count.get(k)) is None for k in REQUIRED_INDICATORS):
@@ -852,27 +884,36 @@ async def run_one_ticker(
             )
         )
 
-        manager_panel_text = _build_manager_panel_table(
-            fundamental_analyses=fundamental_analyses,
-            ticker=ticker,
+        manager_timeseries_rows.append(
+            {
+                "ticker": canonical_ticker(ticker),
+                "date": str(date),
+                "month": canonical_month(date),
+                "market": _row_for_decision_date(monthly_window_rows, date),
+                "indicators": list(analyst_json.get("indicators", [])),
+                "previous_decision": dict(previous_decision),
+            }
+        )
+        manager_timeseries_json = _build_manager_timeseries_json(
+            manager_timeseries_rows=manager_timeseries_rows,
             max_months=max_months,
         )
 
         manager_prompt = MANAGER_MONTHLY_TASK_PROMPT.format(
             ticker=ticker,
             date=date,
-            manager_panel_table=manager_panel_text,
+            manager_timeseries_json=manager_timeseries_json,
         )
 
         manager_result = await Runner.run(manager, manager_prompt)
-        manager_schema = '{ "recommendation": "HOLD", "target_price": 123.45, "justification": "..." }'
+        manager_schema = '{ "decision": "HOLD", "target_price": null, "rationale": "..." }'
         manager_raw = parse_json_safe(manager_result.final_output, fallback={}, label="manager_output")
         if not manager_raw:
             manager_raw = await repair_to_json(
                 manager,
                 str(manager_result.final_output),
                 manager_schema,
-                fallback={"recommendation": "HOLD", "target_price": float(price_today), "justification": "repair_failed"},
+                fallback={"decision": "HOLD", "target_price": None, "rationale": "repair_failed"},
             )
             if not manager_raw:
                 print(f"[agent][warn] manager output invalid after repair ({ticker} {date})", file=sys.stderr, flush=True)
@@ -885,24 +926,29 @@ async def run_one_ticker(
             window_rows_used=window_rows_used,
             used_price=price_today,
         )
-        action_counts[manager_json["recommendation"]] += 1
+        action_counts[manager_json["decision"]] += 1
 
         manager_decisions.append(
             {
                 "analysis_date": date,
-                "stock_id": ticker,
-                "recommendation": manager_json["recommendation"],
+                "month": canonical_month(date),
+                "stock_id": canonical_ticker(ticker),
+                "decision": manager_json["decision"],
                 "target_price": manager_json["target_price"],
-                "justification": manager_json["justification"],
+                "rationale": manager_json["rationale"],
             }
         )
 
         outputs.append(
             {
+                "ticker": canonical_ticker(ticker),
                 "date": date,
+                "month": canonical_month(date),
                 "price": price_today,
                 "analyst": analyst_json,
                 "manager": manager_json,
+                "missing_indicator_names": list(reflection_debug["missing_final"]),
+                "reflection_debug": reflection_debug,
             }
         )
 
@@ -913,6 +959,10 @@ async def run_one_ticker(
         )
         (ticker_dir / f"{date}_manager_0.json").write_text(
             json.dumps(manager_json, indent=2),
+            encoding="utf-8",
+        )
+        (ticker_dir / f"{date}_reflection_debug.json").write_text(
+            json.dumps(reflection_debug, indent=2),
             encoding="utf-8",
         )
         (out_dir / f"{ticker}_results_sample.json").write_text(
