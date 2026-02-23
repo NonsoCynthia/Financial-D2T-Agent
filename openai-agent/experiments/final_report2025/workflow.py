@@ -1,0 +1,405 @@
+import asyncio
+import json
+import os
+import time
+
+from agents import Agent, ModelSettings, Runner, RunResult
+from experiments import ExperimentMetadata, Intensity
+from experiments.final_report2025.config import STOCKS, DB_PATH, ANALYSIS_DATES
+from experiments.utils import get_result, save_results
+from openai.types.shared import Reasoning
+
+from tools import code_interpreter
+from db.base_query import run_sql_query
+from db import get_price_on_or_before, get_nearest_report_end_date, get_previous_report_end_date
+
+from financial_agents import get_agent
+from financial_agents.financial_analyst import FINANCIAL_ANALYST_INSTRUCTION
+from financial_agents.financial_manager import MANAGER_INSTRUCTION, ManagerDecision
+from financial_agents.us_indicator_schema import IndicatorOutput, Indicator
+
+from experiments.validation.indicator_sanity import find_sanity_issues, indicators_to_recompute
+
+
+TEMPLATE_INPUT = """Run fundamental analysis for {name} (CIK {cnpj}) as of {analysis_date} with last price {price_str} USD.
+
+# SEC snapshot (end_date {end_date})
+{report}
+
+# Share snapshot (end_date {end_date})
+{composition}
+
+# Previous snapshot (end_date {prev_end_date})
+{previous_report}
+
+Feedback: {feedback}"""
+
+MANAGER_TEMPLATE_INPUT = """Make an investment decision for {name} ({ticker}, CIK {cnpj}) as of {analysis_date}.
+Current price: {price_str} USD.
+
+You are given the analyst indicators below:
+{indicator_lines}
+
+Return your response in the required schema with:
+- recommendation (Buy/Sell/Hold)
+- justification
+- target_price
+"""
+
+
+def init_agent(experiment_metadata: ExperimentMetadata) -> Agent:
+    model_settings = ModelSettings(tool_choice="required")
+    if experiment_metadata.reasoning is not None:
+        reasoning = Reasoning(effort=experiment_metadata.reasoning)
+        model_settings = ModelSettings(reasoning=reasoning, verbosity=experiment_metadata.verbosity)
+
+    return get_agent(
+        name="financial_analyst",
+        instructions=FINANCIAL_ANALYST_INSTRUCTION,
+        tools=[code_interpreter],
+        servers=[],
+        model=experiment_metadata.model,
+        model_settings=model_settings,
+        output_type=IndicatorOutput,
+    )
+
+
+def init_manager_agent(experiment_metadata: ExperimentMetadata) -> Agent:
+    manager_settings = ModelSettings(tool_choice="required")
+    # Manager reasoning is intentionally set to high for decision quality.
+    manager_reasoning = Reasoning(effort=Intensity.HIGH)
+    manager_settings = ModelSettings(reasoning=manager_reasoning, verbosity=experiment_metadata.verbosity)
+
+    return get_agent(
+        name="financial_manager_workflow",
+        instructions=MANAGER_INSTRUCTION,
+        tools=[code_interpreter],
+        servers=[],
+        model=experiment_metadata.model,
+        model_settings=manager_settings,
+        output_type=ManagerDecision,
+    )
+
+
+def get_stock_report(ticker: str, end_date: str) -> str:
+    query = f"""
+    SELECT CONCEPT, UNIT, VALUE_REAL, FORM, FY, FP, START_DATE, END_DATE, FILED_DATE
+    FROM SEC_COMPANYFACTS
+    WHERE TICKER = '{ticker}' AND END_DATE = '{end_date}'
+    ORDER BY CONCEPT, FILED_DATE;
+    """
+    return run_sql_query({"sql_query": query}, db_path=DB_PATH).get("report", "")
+
+
+def get_stock_composition(ticker: str, end_date: str) -> str:
+    query = f"""
+    SELECT CONCEPT, UNIT, VALUE_REAL, FORM, FY, FP, END_DATE, FILED_DATE
+    FROM SEC_COMPANYFACTS
+    WHERE TICKER = '{ticker}'
+      AND END_DATE = '{end_date}'
+      AND CONCEPT IN ('CommonStockSharesOutstanding', 'EarningsPerShareBasic')
+    ORDER BY CONCEPT, FILED_DATE DESC;
+    """
+    return run_sql_query({"sql_query": query}, db_path=DB_PATH).get("report", "")
+
+
+def _to_map(result: RunResult) -> dict[str, float]:
+    out = {}
+    for row in result.final_output.indicators:
+        out[str(row.indicator)] = float(row.value)
+    return out
+
+
+def _to_map_from_payload(payload: dict) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for row in payload.get("indicators", []):
+        k = str(row.get("indicator", "")).strip()
+        if not k:
+            continue
+        v = row.get("value", 0.0)
+        out[k] = float(v or 0.0)
+    return out
+
+
+def _manager_prompt(name: str, ticker: str, cnpj: str, analysis_date: str, price_str: str, indicators: dict[str, float]) -> str:
+    indicator_lines = "\n".join([f"- {k}: {v}" for k, v in sorted(indicators.items())])
+    return MANAGER_TEMPLATE_INPUT.format(
+        name=name,
+        ticker=ticker,
+        cnpj=cnpj,
+        analysis_date=analysis_date,
+        price_str=price_str,
+        indicator_lines=indicator_lines,
+    )
+
+
+def _load_json(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _save_json(path: str, payload: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=4)
+
+
+def analyse(
+    agent: Agent,
+    name: str,
+    cnpj: str,
+    ticker: str,
+    price: str,
+    analysis_date: str,
+    end_date: str,
+    prev_end_date: str,
+    report: str,
+    composition: str,
+    previous_report: str,
+    experiment_metadata: ExperimentMetadata,
+    feedback: str,
+) -> RunResult:
+    inp_data = TEMPLATE_INPUT.format(
+        name=name,
+        cnpj=cnpj,
+        analysis_date=analysis_date,
+        price_str=price,
+        end_date=end_date,
+        report=report,
+        composition=composition,
+        prev_end_date=prev_end_date,
+        previous_report=previous_report,
+        feedback=feedback,
+    )
+    return asyncio.run(Runner.run(agent, input=inp_data, max_turns=experiment_metadata.max_turns))
+
+
+def guardrail_reflection(
+    agent: Agent,
+    name: str,
+    cnpj: str,
+    ticker: str,
+    price: str,
+    analysis_date: str,
+    end_date: str,
+    prev_end_date: str,
+    report: str,
+    composition: str,
+    previous_report: str,
+    result: RunResult,
+    experiment_metadata: ExperimentMetadata,
+) -> RunResult:
+    expected = {str(i) for i in Indicator}
+    current = _to_map(result)
+
+    missing = [k for k in expected if (k not in current) or (current[k] == 0.0)]
+    issues = find_sanity_issues(current)
+    suspect = indicators_to_recompute(issues)
+    to_fix = sorted(set(missing + suspect))
+
+    if not to_fix:
+        return result
+
+    issue_text = "\n".join([f"- {i.indicator}: {i.message}" for i in issues]) if issues else "None"
+    feedback = (
+        f"Recompute ONLY these indicators: {to_fix}\n"
+        f"Sanity issues detected:\n{issue_text}\n"
+        "Use correct US decimal formatting and verify concept selection."
+    )
+
+    reflected = analyse(
+        agent,
+        name,
+        cnpj,
+        ticker,
+        price,
+        analysis_date,
+        end_date,
+        prev_end_date,
+        report,
+        composition,
+        previous_report,
+        experiment_metadata,
+        feedback,
+    )
+    ref_map = {str(r.indicator): r for r in reflected.final_output.indicators}
+
+    merged = []
+    for row in result.final_output.indicators:
+        k = str(row.indicator)
+        if k in to_fix and k in ref_map:
+            merged.append(ref_map[k])
+        else:
+            merged.append(row)
+
+    merged_keys = {str(r.indicator) for r in merged}
+    for k in to_fix:
+        if k in ref_map and k not in merged_keys:
+            merged.append(ref_map[k])
+
+    result.final_output.indicators = merged
+
+    result.context_wrapper.usage.requests += reflected.context_wrapper.usage.requests
+    result.context_wrapper.usage.input_tokens += reflected.context_wrapper.usage.input_tokens
+    result.context_wrapper.usage.output_tokens += reflected.context_wrapper.usage.output_tokens
+    result.context_wrapper.usage.total_tokens += reflected.context_wrapper.usage.total_tokens
+
+    return result
+
+
+def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
+    write_folder = f"{experiment_metadata.write_folder}/{experiment_metadata.model}/workflow_{experiment_metadata.reflection}"
+    os.makedirs(write_folder, exist_ok=True)
+
+    with open(f"{write_folder}/experiment_metadata.json", "w", encoding="utf-8") as f:
+        json.dump(experiment_metadata.model_dump(), f, indent=4)
+
+    analyst_agent = init_agent(experiment_metadata=experiment_metadata)
+    manager_agent = init_manager_agent(experiment_metadata=experiment_metadata)
+
+    for stock in STOCKS:
+        name, cnpj, stock_id = stock.name, stock.cnpj, stock.stock_id
+        for analysis_date in ANALYSIS_DATES:
+            price = get_price_on_or_before(ticker=stock_id, as_of_date=analysis_date, db_path=DB_PATH)
+            if price is None:
+                print(f"Skipping {stock_id} on {analysis_date}: no price on/before {analysis_date}")
+                continue
+            price_str = f"{price:.2f}"  # US decimal format
+
+            end_date = get_nearest_report_end_date(stock_id, analysis_date, db_path=DB_PATH) or analysis_date
+            prev_end_date = get_previous_report_end_date(stock_id, end_date, db_path=DB_PATH) or end_date
+
+            report = get_stock_report(stock_id, end_date)
+            composition = get_stock_composition(stock_id, end_date)
+            previous_report = get_stock_report(stock_id, prev_end_date)
+
+            for experiment_id in range(n_times):
+                analyst_file = f"{write_folder}/{stock_id}_{analysis_date}_{experiment_id}.json"
+                analyst_output_file = f"{write_folder}/{stock_id}_{analysis_date}_output_{experiment_id}.json"
+                manager_file = f"{write_folder}/{stock_id}_{analysis_date}_manager_{experiment_id}.json"
+                manager_decision_file = (
+                    f"{write_folder}/{stock_id}_{analysis_date}_manager_decision_{experiment_id}.json"
+                )
+
+                existing_analyst_output = _load_json(analyst_output_file)
+                existing_manager_payload = _load_json(manager_file)
+                if (
+                    os.path.exists(analyst_file)
+                    and existing_analyst_output is not None
+                    and isinstance(existing_analyst_output.get("manager"), dict)
+                    and existing_manager_payload is not None
+                    and os.path.exists(manager_decision_file)
+                ):
+                    continue
+
+                indicators_payload = existing_analyst_output
+                indicators_map: dict[str, float] = {}
+
+                if indicators_payload is None:
+                    start = time.time()
+                    base_feedback = "Compute all 32 indicators."
+                    result = analyse(
+                        analyst_agent,
+                        name,
+                        cnpj,
+                        stock_id,
+                        price_str,
+                        analysis_date,
+                        end_date,
+                        prev_end_date,
+                        report,
+                        composition,
+                        previous_report,
+                        experiment_metadata,
+                        base_feedback,
+                    )
+
+                    if experiment_metadata.reflection:
+                        result = guardrail_reflection(
+                            analyst_agent,
+                            name,
+                            cnpj,
+                            stock_id,
+                            price_str,
+                            analysis_date,
+                            end_date,
+                            prev_end_date,
+                            report,
+                            composition,
+                            previous_report,
+                            result,
+                            experiment_metadata,
+                        )
+
+                    end = time.time()
+                    save_results(
+                        write_folder,
+                        stock_id,
+                        result,
+                        end - start,
+                        experiment_id,
+                        analysis_date=analysis_date,
+                    )
+                    indicators_payload = result.final_output.model_dump()
+                    indicators_payload["analysis_date"] = analysis_date
+                    indicators_map = _to_map(result)
+                else:
+                    indicators_map = _to_map_from_payload(indicators_payload)
+
+                if not indicators_map:
+                    print(
+                        f"Skipping manager for {stock_id} on {analysis_date} run {experiment_id}: "
+                        "no analyst indicators found."
+                    )
+                    continue
+
+                manager_payload = existing_manager_payload
+                if manager_payload is None:
+                    manager_prompt = _manager_prompt(
+                        name=name,
+                        ticker=stock_id,
+                        cnpj=cnpj,
+                        analysis_date=analysis_date,
+                        price_str=price_str,
+                        indicators=indicators_map,
+                    )
+                    manager_start = time.time()
+                    manager_result = asyncio.run(
+                        Runner.run(manager_agent, input=manager_prompt, max_turns=experiment_metadata.max_turns)
+                    )
+                    manager_end = time.time()
+                    manager_payload = get_result(manager_result, manager_end - manager_start)
+
+                if isinstance(manager_payload, dict):
+                    manager_payload["analysis_date"] = analysis_date
+
+                manager_output = manager_payload.get("output", {}) if isinstance(manager_payload, dict) else {}
+                if not isinstance(manager_output, dict):
+                    manager_output = {}
+                manager_output = dict(manager_output)
+                manager_output["analysis_date"] = analysis_date
+
+                if isinstance(manager_payload, dict):
+                    manager_payload["output"] = manager_output
+                    _save_json(manager_file, manager_payload)
+
+                _save_json(manager_decision_file, manager_output)
+
+                merged_output = dict(indicators_payload)
+                merged_output["analysis_date"] = analysis_date
+                merged_output["manager"] = manager_output
+                _save_json(analyst_output_file, merged_output)
+
+                analyst_payload = _load_json(analyst_file)
+                if isinstance(analyst_payload, dict):
+                    analyst_payload["analysis_date"] = analysis_date
+                    analyst_payload["manager"] = manager_payload
+                    _save_json(analyst_file, analyst_payload)
+                time.sleep(10)

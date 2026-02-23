@@ -1,297 +1,87 @@
-import sys
-import time
+#!/usr/bin/env python3
+"""
+Build SEC_COMPANYFACTS SQLite database from processed SEC CSV files.
+
+Expected input:
+data/raw/sec/companyfacts/*_companyfacts.csv
+
+Output:
+data/raw/sec/sec_companyfacts.db
+
+The table schema matches openai-agent US workflow requirements.
+"""
+
+from __future__ import annotations
+
 import sqlite3
-from datetime import date
-from pathlib import Path
-from typing import Optional
-
 import pandas as pd
-import requests
+from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-from config import SEC_HEADERS_BASE, SEC_MAP_DIR, RAW_DIR
-
-START_END = date(2022, 1, 1)
-END_END = date(2025, 12, 31)
-
-OUT_DIR = RAW_DIR / "sec" / "companyfacts"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-DB_PATH = RAW_DIR / "sec" / "sec_companyfacts.db"
-TABLE = "SEC_COMPANYFACTS"
+CSV_DIR = PROJECT_ROOT / "data" / "raw" / "sec" / "companyfacts"
+OUT_DB = PROJECT_ROOT / "data" / "raw" / "sec" / "sec_companyfacts.db"
 
 
-def parse_ymd(s: str) -> Optional[date]:
+def create_schema(con: sqlite3.Connection) -> None:
     """
-    Parse a date string in YYYY-MM-DD format into a date object.
-
-    Returns None if parsing fails.
-    """
-    try:
-        y, m, d = s.split("-")
-        return date(int(y), int(m), int(d))
-    except Exception:
-        return None
-
-
-def fetch_json(
-    session: requests.Session,
-    url: str,
-    headers: dict,
-    retries: int = 6,
-) -> Optional[dict]:
-    """
-    Fetch a JSON payload from the SEC endpoint with basic retry logic.
-
-    Behaviour:
-    - Retries on common transient failures (429, 5xx).
-    - Returns None on 404.
-    - Raises on repeated failures after retries.
-    """
-    last = None
-    for i in range(retries):
-        try:
-            r = session.get(url, headers=headers, timeout=40)
-
-            if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.5 + i * 0.7)
-                continue
-
-            if r.status_code == 404:
-                return None
-
-            r.raise_for_status()
-            return r.json()
-
-        except Exception as e:
-            last = e
-            time.sleep(0.5 + i * 0.7)
-
-    raise RuntimeError(f"Failed to fetch {url}. Last error: {last}")
-
-
-def load_selected_map() -> pd.DataFrame:
-    """
-    Load the selected ticker to CIK mapping produced by 02_sec_ticker_cik.py.
-
-    This file is required for the CompanyFacts step.
-    """
-    p = SEC_MAP_DIR / "sec_ticker_cik_selected.csv"
-    if not p.exists():
-        raise FileNotFoundError(f"Missing {p}. Run step sec_map first.")
-
-    df = pd.read_csv(p, dtype=str)
-
-    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
-    df["cik10"] = df["cik10"].astype(str).str.zfill(10)
-
-    if "title" in df.columns:
-        df["title"] = df["title"].astype(str)
-    else:
-        df["title"] = ""
-
-    df = df[["ticker", "cik10", "title"]].drop_duplicates(subset=["ticker"]).reset_index(drop=True)
-    return df
-
-
-def extract_companyfacts(ticker: str, cik10: str, company_title: str, data: dict) -> pd.DataFrame:
-    """
-    Extract quarterly or annual XBRL facts from the SEC CompanyFacts JSON.
-
-    Steps:
-    - Focus on US GAAP concepts when available, otherwise fall back to IFRS.
-    - Keep only 10-K and 10-Q filings.
-    - Keep only rows where the 'end' date is within START_END and END_END.
-    - Return a tidy long table with one row per (concept, unit, period, value).
-    """
-    facts_block = data.get("facts", {})
-    facts = facts_block.get("us-gaap", {})
-    if not facts:
-        facts = facts_block.get("ifrs-full", {})
-
-    rows = []
-
-    for concept, concept_data in facts.items():
-        units = concept_data.get("units", {})
-
-        for unit, items in units.items():
-            for it in items:
-                end = it.get("end")
-                end_d = parse_ymd(end) if end else None
-
-                if end_d is None:
-                    continue
-
-                if not (START_END <= end_d <= END_END):
-                    continue
-                
-                form = it.get("form")
-                #NIO is a foreign company so form not in {10-K, 10-Q} (foreign issuers often use 20-F, 6-K)
-                allowed_forms = {"10-K", "10-Q", "20-F", "40-F", "6-K"}
-                if form not in allowed_forms:
-                    continue
-
-                rows.append(
-                    {
-                        "ticker": ticker,
-                        "cik10": cik10,
-                        "company_title": company_title,
-                        "concept": concept,
-                        "unit": unit,
-                        "value": it.get("val"),
-                        "form": form,
-                        "fy": it.get("fy"),
-                        "fp": it.get("fp"),
-                        "start": it.get("start"),
-                        "end": end,
-                        "filed": it.get("filed"),
-                        "accn": it.get("accn"),
-                        "frame": it.get("frame"),
-                    }
-                )
-
-    cols = [
-        "ticker",
-        "cik10",
-        "company_title",
-        "concept",
-        "unit",
-        "value",
-        "form",
-        "fy",
-        "fp",
-        "start",
-        "end",
-        "filed",
-        "accn",
-        "frame",
-    ]
-
-    if not rows:
-        return pd.DataFrame(columns=cols)
-
-    df = pd.DataFrame(rows)
-
-    df["end"] = pd.to_datetime(df["end"], errors="coerce").dt.strftime("%Y-%m-%d")
-    df["start"] = pd.to_datetime(df["start"], errors="coerce").dt.strftime("%Y-%m-%d")
-    df["filed"] = pd.to_datetime(df["filed"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-    df = df.sort_values(["ticker", "end", "concept", "unit"]).reset_index(drop=True)
-    return df
-
-
-def save_outputs(df_all: pd.DataFrame) -> None:
-    """
-    Save the aggregated CompanyFacts dataset to CSV and Parquet.
-
-    This preserves your existing outputs so downstream scripts keep working.
-    """
-    out_csv = OUT_DIR / "companyfacts_2022_2025.csv"
-    df_all.to_csv(out_csv, index=False)
-
-    try:
-        out_parquet = OUT_DIR / "companyfacts_2022_2025.parquet"
-        df_all.to_parquet(out_parquet, index=False)
-    except Exception as e:
-        print(f"Parquet not written. {e}")
-
-    print(f"Saved: {out_csv}")
-
-
-def create_companyfacts_table(db_path: Path) -> None:
-    """
-    Create the SQLite table and indexes for CompanyFacts.
-
-    Design notes:
-    - We allow NULLs because SEC facts can be sparse.
-    - We store value as both text and numeric when possible.
-    - We add a uniqueness constraint to prevent duplication on re-runs.
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    schema = f"""
-    CREATE TABLE IF NOT EXISTS {TABLE} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        TICKER TEXT NOT NULL,
-        CIK10 TEXT NOT NULL,
-        COMPANY_TITLE TEXT,
-        CONCEPT TEXT NOT NULL,
-        UNIT TEXT NOT NULL,
-        VALUE_TEXT TEXT,
-        VALUE_REAL REAL,
-        FORM TEXT,
-        FY INTEGER,
-        FP TEXT,
-        START_DATE TEXT,
-        END_DATE TEXT,
-        FILED_DATE TEXT,
-        ACCN TEXT,
-        FRAME TEXT,
-        UNIQUE(CIK10, CONCEPT, UNIT, END_DATE, ACCN, FORM, FP, FY)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_companyfacts_ticker
-    ON {TABLE} (TICKER);
-
-    CREATE INDEX IF NOT EXISTS idx_companyfacts_cik10
-    ON {TABLE} (CIK10);
-
-    CREATE INDEX IF NOT EXISTS idx_companyfacts_end_date
-    ON {TABLE} (END_DATE);
-
-    CREATE INDEX IF NOT EXISTS idx_companyfacts_concept
-    ON {TABLE} (CONCEPT);
+    Create SEC_COMPANYFACTS table.
     """
 
-    con = sqlite3.connect(str(db_path))
-    cur = con.cursor()
-    cur.executescript(schema)
-    con.commit()
-    cur.close()
-    con.close()
+    con.execute("DROP TABLE IF EXISTS SEC_COMPANYFACTS")
 
-
-def insert_companyfacts_sqlite(db_path: Path, df: pd.DataFrame) -> int:
-    """
-    Bulk insert CompanyFacts rows into SQLite.
-
-    Returns the number of rows attempted for insertion.
-    """
-    if df is None or df.empty:
-        return 0
-
-    df2 = df.copy()
-
-    df2["VALUE_TEXT"] = df2["value"].astype(str)
-    df2["VALUE_REAL"] = pd.to_numeric(df2["value"], errors="coerce")
-
-    df2 = df2.rename(
-        columns={
-            "ticker": "TICKER",
-            "cik10": "CIK10",
-            "company_title": "COMPANY_TITLE",
-            "concept": "CONCEPT",
-            "unit": "UNIT",
-            "form": "FORM",
-            "fy": "FY",
-            "fp": "FP",
-            "start": "START_DATE",
-            "end": "END_DATE",
-            "filed": "FILED_DATE",
-            "accn": "ACCN",
-            "frame": "FRAME",
-        }
+    con.execute(
+        """
+        CREATE TABLE SEC_COMPANYFACTS (
+            TICKER TEXT,
+            CIK TEXT,
+            CONCEPT TEXT,
+            UNIT TEXT,
+            VALUE_REAL REAL,
+            FORM TEXT,
+            FY TEXT,
+            FP TEXT,
+            START_DATE TEXT,
+            END_DATE TEXT,
+            FILED_DATE TEXT,
+            ACCN TEXT,
+            FRAME TEXT
+        )
+        """
     )
 
-    cols = [
+    con.commit()
+
+
+def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure expected column names exist.
+    """
+
+    rename_map = {
+        "ticker": "TICKER",
+        "cik": "CIK",
+        "concept": "CONCEPT",
+        "unit": "UNIT",
+        "value": "VALUE_REAL",
+        "val": "VALUE_REAL",
+        "form": "FORM",
+        "fy": "FY",
+        "fp": "FP",
+        "start": "START_DATE",
+        "end": "END_DATE",
+        "filed": "FILED_DATE",
+        "accn": "ACCN",
+        "frame": "FRAME",
+    }
+
+    df = df.rename(columns=rename_map)
+
+    required_cols = [
         "TICKER",
-        "CIK10",
-        "COMPANY_TITLE",
+        "CIK",
         "CONCEPT",
         "UNIT",
-        "VALUE_TEXT",
         "VALUE_REAL",
         "FORM",
         "FY",
@@ -303,82 +93,72 @@ def insert_companyfacts_sqlite(db_path: Path, df: pd.DataFrame) -> int:
         "FRAME",
     ]
 
-    df2 = df2[cols]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = None
 
-    df2["FY"] = pd.to_numeric(df2["FY"], errors="coerce").astype("Int64")
-    df2 = df2.where(pd.notnull(df2), None)
-
-    rows = list(df2.itertuples(index=False, name=None))
-
-    insert_sql = f"""
-    INSERT OR REPLACE INTO {TABLE}
-    (TICKER, CIK10, COMPANY_TITLE, CONCEPT, UNIT, VALUE_TEXT, VALUE_REAL, FORM, FY, FP,
-     START_DATE, END_DATE, FILED_DATE, ACCN, FRAME)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
-
-    con = sqlite3.connect(str(db_path))
-    cur = con.cursor()
-    cur.executemany(insert_sql, rows)
-    con.commit()
-    cur.close()
-    con.close()
-
-    return len(rows)
+    return df[required_cols]
 
 
 def main() -> None:
-    """
-    Pipeline entry point.
 
-    - Loads selected ticker to CIK map.
-    - Downloads SEC CompanyFacts for each ticker.
-    - Extracts facts into a tidy long table.
-    - Saves per ticker CSVs and a combined CSV and Parquet.
-    - Creates and populates a SQLite database table plus indexes.
-    """
-    mapping = load_selected_map()
+    if not CSV_DIR.exists():
+        raise FileNotFoundError(f"Missing directory: {CSV_DIR}")
 
-    create_companyfacts_table(DB_PATH)
+    csv_files = sorted(CSV_DIR.glob("*_companyfacts.csv"))
 
-    all_parts = []
-    inserted_total = 0
+    if not csv_files:
+        raise RuntimeError("No *_companyfacts.csv files found.")
 
-    with requests.Session() as session:
-        for _, row in mapping.iterrows():
-            ticker = row["ticker"]
-            cik10 = row["cik10"]
-            title = row.get("title", "")
+    print(f"Found {len(csv_files)} CSV files")
 
-            url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
-            data = fetch_json(session, url, SEC_HEADERS_BASE)
+    if OUT_DB.exists():
+        OUT_DB.unlink()
 
-            if data is None:
-                print(f"Missing CompanyFacts for {ticker} (CIK {cik10})")
-                continue
+    con = sqlite3.connect(str(OUT_DB))
 
-            df = extract_companyfacts(ticker, cik10, title, data)
+    try:
+        create_schema(con)
 
-            per_ticker_csv = OUT_DIR / f"{ticker}_companyfacts.csv"
-            df.to_csv(per_ticker_csv, index=False)
+        total_rows = 0
 
-            if df.empty:
-                print(f"Saved {ticker}: 0 facts")
-            else:
-                all_parts.append(df)
-                inserted_total += insert_companyfacts_sqlite(DB_PATH, df)
-                print(f"Saved {ticker}: {len(df)} facts")
+        for file_path in csv_files:
+            print(f"Processing {file_path.name}")
 
-            time.sleep(0.12)
+            df = pd.read_csv(file_path, low_memory=False)
 
-    if not all_parts:
-        raise RuntimeError("No CompanyFacts extracted.")
+            df = normalise_columns(df)
 
-    df_all = pd.concat(all_parts, ignore_index=True)
-    save_outputs(df_all)
+            df["VALUE_REAL"] = pd.to_numeric(df["VALUE_REAL"], errors="coerce")
 
-    print(f"SQLite saved: {DB_PATH} table {TABLE}. Inserted rows: {inserted_total}")
-    print("Done")
+            df.to_sql(
+                "SEC_COMPANYFACTS",
+                con,
+                if_exists="append",
+                index=False,
+            )
+
+            total_rows += len(df)
+
+        con.commit()
+
+        cur = con.execute("SELECT COUNT(*) FROM SEC_COMPANYFACTS")
+        count = cur.fetchone()[0]
+
+        print(f"Inserted {count} rows")
+
+        if count == 0:
+            raise RuntimeError("SEC_COMPANYFACTS table is empty.")
+
+        # Create useful indexes
+        con.execute("CREATE INDEX IF NOT EXISTS idx_sec_ticker_concept_end ON SEC_COMPANYFACTS (TICKER, CONCEPT, END_DATE)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_sec_ticker_filed ON SEC_COMPANYFACTS (TICKER, FILED_DATE)")
+        con.commit()
+
+        print(f"Database written to: {OUT_DB}")
+
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":

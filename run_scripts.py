@@ -17,7 +17,7 @@ STEP_SCRIPTS = {
     # "splits": "scripts/05_make_splits.py",
     "monthly_panel": "scripts/06_make_monthly_panel.py",
     "yahoo_spotcheck": "scripts/07_yahoo_gold_spotcheck.py",
-
+    "fundamental_db": "scripts/08_build_mcp_db.py",
 }
 
 def run_step(step: str) -> int:

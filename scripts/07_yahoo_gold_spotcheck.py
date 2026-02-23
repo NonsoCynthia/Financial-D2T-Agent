@@ -19,16 +19,39 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import yfinance as yf
 
-# Ensure local package imports work when script is launched outside repo root.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+def canonical_ticker(ticker: Any) -> str:
+    return str(ticker or "").strip().upper()
 
-from finAgents.financial_agents.indicator_mapping import (
-    canonical_month,
-    canonical_ticker,
-    indicators_to_canonical_map,
-)
+
+def canonical_month(value: Any) -> str:
+    dt = pd.to_datetime(value, errors="coerce")
+    if pd.isna(dt):
+        return ""
+    return dt.strftime("%Y-%m")
+
+
+def indicators_to_canonical_map(indicators: Any) -> Dict[str, Any]:
+    """
+    Convert common prediction formats into {indicator_name: value}.
+    Supports:
+    - dict: {"P_E": 10.0, ...}
+    - list[dict]: [{"indicator": "P_E", "value": 10.0}, ...]
+    """
+    if isinstance(indicators, dict):
+        return {str(k): v for k, v in indicators.items()}
+
+    if isinstance(indicators, list):
+        out: Dict[str, Any] = {}
+        for row in indicators:
+            if not isinstance(row, dict):
+                continue
+            key = row.get("indicator")
+            if key is None:
+                continue
+            out[str(key)] = row.get("value")
+        return out
+
+    return {}
 
 
 TARGET_KEYS = [
@@ -266,7 +289,12 @@ class Args:
 
 def parse_args() -> Args:
     p = argparse.ArgumentParser()
-    p.add_argument("--pred_dir", type=str, required=True, help="Prediction directory (agent or workflow outputs).")
+    p.add_argument(
+        "--pred_dir",
+        type=str,
+        default="results/final_report2025_us",
+        help="Prediction directory (agent or workflow outputs).",
+    )
     p.add_argument("--mode", type=str, choices=["auto", "workflow", "agent"], default="auto")
     p.add_argument("--month", type=str, default="2025-04", help="Spot-check month in YYYY-MM format.")
     p.add_argument("--tickers", type=str, default=None, help="Optional comma-separated ticker filter.")
@@ -299,9 +327,14 @@ def parse_args() -> Args:
 def main() -> None:
     args = parse_args()
     if not args.pred_dir.exists():
-        raise FileNotFoundError(f"pred_dir not found: {args.pred_dir}")
+        print(f"pred_dir not found: {args.pred_dir}")
+        return
 
-    mode = args.mode if args.mode != "auto" else detect_mode(args.pred_dir)
+    try:
+        mode = args.mode if args.mode != "auto" else detect_mode(args.pred_dir)
+    except RuntimeError as e:
+        print(f"{e}")
+        return
     preds = load_predictions(args.pred_dir, mode, args.month, args.tickers)
     if not preds:
         print(f"No prediction rows found for month {args.month} in {args.pred_dir} (mode={mode}).")
