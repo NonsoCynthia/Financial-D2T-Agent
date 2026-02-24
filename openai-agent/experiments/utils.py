@@ -42,7 +42,7 @@ def save_results(
     experiment_id: int,
     analysis_date: str | None = None,
 ) -> None:
-    agent_result = get_result(result, elapsed_time)
+    agent_result = get_result(result=result, elapsed_time=elapsed_time)
     stock_key = f"{stock_id}_{analysis_date}" if analysis_date else stock_id
 
     if analysis_date:

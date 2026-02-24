@@ -104,10 +104,10 @@ def save_split(df: pd.DataFrame, name: str) -> None:
 
 def main() -> None:
     df = load_panel()
-    df = add_simple_features(df)
-    df = make_target(df)
+    df = add_simple_features(df=df)
+    df = make_target(df=df)
 
-    train, test = split_by_date(df)
+    train, test = split_by_date(df=df)
 
     feature_cols = [
         "ret_1d",
@@ -131,13 +131,13 @@ def main() -> None:
             train[c] = np.nan
             test[c] = np.nan
 
-    train, test = standardise(train, test, feature_cols)
+    train, test = standardise(train=train, test=test, feature_cols=feature_cols)
 
     train = train.dropna(subset=["target_ret_1d"])
     test = test.dropna(subset=["target_ret_1d"])
 
-    save_split(train, "train_2022_2024")
-    save_split(test, "test_2025")
+    save_split(df=train, name="train_2022_2024")
+    save_split(df=test, name="test_2025")
 
     meta = {
         "train_end": TRAIN_END,

@@ -115,7 +115,7 @@ def main() -> int:
     openai_agent_dir = Path(__file__).resolve().parent
     project_root = openai_agent_dir.parent
 
-    load_env(project_root)
+    load_env(project_root=project_root)
 
     from experiments import ExperimentMetadata, Intensity, Model
     import experiments.final_report2025.config as config_mod

@@ -44,3 +44,11 @@ python \
 --mode folder \
 --pred-folder /home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/results/final_report2025_us_test_one_ticker/gpt-5-mini/workflow_False \
 --gold-csv /home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data/processed/panel/daily_panel_prices_returns_fundamentals.csv
+
+
+# python scripts/run_gold_benchmark.py \
+#   --ticker TSLA \
+#   --asof 2026-02-23 \
+#   --pred data/predictions/TSLA_2026-02-23.json \
+#   --roic_apikey YOUR_ROIC_KEY \
+#   --google_exchange NASDAQ

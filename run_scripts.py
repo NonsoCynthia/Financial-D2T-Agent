@@ -45,13 +45,13 @@ def main() -> None:
 
     if args.all:
         for s in STEP_SCRIPTS:
-            code = run_step(s)
+            code = run_step(step=s)
             if code != 0:
                 sys.exit(code)
         return
 
     if args.step:
-        sys.exit(run_step(args.step))
+        sys.exit(run_step(step=args.step))
 
     parser.print_help()
 

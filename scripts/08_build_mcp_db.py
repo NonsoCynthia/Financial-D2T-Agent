@@ -49,7 +49,7 @@ def list_tables(db_path: Path) -> list[str]:
     List tables in a SQLite database.
     """
     try:
-        with _connect_readonly(db_path) as con:
+        with _connect_readonly(db_path=db_path) as con:
             rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
         return [r[0] for r in rows]
     except sqlite3.OperationalError as e:
@@ -109,7 +109,7 @@ def copy_table_from_db(src_path: Path, table: str, dst_con: sqlite3.Connection) 
     """
     print(f"Copying table {table} from {src_path}")
 
-    with _connect_readonly(src_path) as src_con:
+    with _connect_readonly(db_path=src_path) as src_con:
         chunks = pd.read_sql_query(f'SELECT * FROM "{table}"', src_con, chunksize=CHUNKSIZE)
         first = True
         total = 0
@@ -126,10 +126,10 @@ def copy_sec_companyfacts(dst_con: sqlite3.Connection) -> None:
     Copy SEC_COMPANYFACTS into destination DB.
     Prefer the SEC SQLite table if present, otherwise fall back to CSV.
     """
-    sec_tables = set(list_tables(SEC_DB)) if SEC_DB.exists() else set()
+    sec_tables = set(list_tables(db_path=SEC_DB)) if SEC_DB.exists() else set()
 
     if "SEC_COMPANYFACTS" in sec_tables:
-        copy_table_from_db(SEC_DB, "SEC_COMPANYFACTS", dst_con)
+        copy_table_from_db(src_path=SEC_DB, table="SEC_COMPANYFACTS", dst_con=dst_con)
         return
 
     print(
@@ -145,7 +145,7 @@ def copy_sec_companyfacts(dst_con: sqlite3.Connection) -> None:
             raise RuntimeError(f"No fallback CSVs found in {SEC_COMPANYFACTS_DIR}")
         facts_df = pd.concat((pd.read_csv(p, low_memory=False) for p in csv_files), ignore_index=True)
 
-    facts_df = normalise_sec_companyfacts(facts_df)
+    facts_df = normalise_sec_companyfacts(df=facts_df)
     facts_df.to_sql("SEC_COMPANYFACTS", dst_con, if_exists="replace", index=False)
     print(f"  inserted {len(facts_df)} rows into SEC_COMPANYFACTS")
 
@@ -178,11 +178,11 @@ def main() -> None:
 
     dst_con = sqlite3.connect(str(OUT_DB))
     try:
-        copy_sec_companyfacts(dst_con)
-        copy_table_from_db(PRICES_DB, "US_PRICES", dst_con)
+        copy_sec_companyfacts(dst_con=dst_con)
+        copy_table_from_db(src_path=PRICES_DB, table="US_PRICES", dst_con=dst_con)
 
         try:
-            copy_table_from_db(PRICES_DB, "US_RETURNS", dst_con)
+            copy_table_from_db(src_path=PRICES_DB, table="US_RETURNS", dst_con=dst_con)
         except Exception:
             print("US_RETURNS not found, skipping")
 
@@ -190,18 +190,18 @@ def main() -> None:
         dst_con.commit()
 
         try:
-            create_indexes(dst_con)
+            create_indexes(dst_con=dst_con)
         except sqlite3.OperationalError as e:
             # Some environments fail index creation on a long-lived write transaction.
             # Retry once on a fresh connection.
             print(f"Index creation retry after error: {e}")
             dst_con.close()
             dst_con = sqlite3.connect(str(OUT_DB))
-            create_indexes(dst_con)
+            create_indexes(dst_con=dst_con)
 
         dst_con.commit()
 
-        final_tables = list_tables(OUT_DB)
+        final_tables = list_tables(db_path=OUT_DB)
         print("Final tables:", final_tables)
         print("Consolidated DB created at:", OUT_DB)
 

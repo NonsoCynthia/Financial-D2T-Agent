@@ -129,16 +129,28 @@ async def _run_with_optional_mcp(agent: Agent, inp_data: str, max_turns: int) ->
     async with contextlib.AsyncExitStack() as stack:
         for server in agent.mcp_servers:
             await stack.enter_async_context(server)
-        return await Runner.run(agent, input=inp_data, max_turns=max_turns)
+        return await Runner.run(agent=agent, input=inp_data, max_turns=max_turns)
 
 
 def _run_with_turn_retry(agent: Agent, inp_data: str, max_turns: int, label: str) -> RunResult:
     try:
-        return asyncio.run(_run_with_optional_mcp(agent, inp_data, max_turns))
+        return asyncio.run(
+            _run_with_optional_mcp(
+                agent=agent,
+                inp_data=inp_data,
+                max_turns=max_turns,
+            )
+        )
     except MaxTurnsExceeded:
         retry_turns = max(30, max_turns * 2)
         print(f"{label}: max turns exceeded at {max_turns}. Retrying with {retry_turns}.")
-        return asyncio.run(_run_with_optional_mcp(agent, inp_data, retry_turns))
+        return asyncio.run(
+            _run_with_optional_mcp(
+                agent=agent,
+                inp_data=inp_data,
+                max_turns=retry_turns,
+            )
+        )
 
 
 def analyse(
@@ -157,7 +169,12 @@ def analyse(
         price_str=price,
         feedback=feedback,
     )
-    return _run_with_turn_retry(agent, inp_data, experiment_metadata.max_turns, label="analyst")
+    return _run_with_turn_retry(
+        agent=agent,
+        inp_data=inp_data,
+        max_turns=experiment_metadata.max_turns,
+        label="analyst",
+    )
 
 
 def _to_map(result: RunResult) -> dict[str, float]:
@@ -223,11 +240,11 @@ def guardrail_reflection(
     - Recompute indicators flagged by sanity checks (e.g., absurd P/E or margins).
     """
     expected = {str(i) for i in Indicator}
-    current = _to_map(result)
+    current = _to_map(result=result)
 
     missing = [k for k in expected if (k not in current) or (current[k] == 0.0)]
-    issues = find_sanity_issues(current)
-    suspect = indicators_to_recompute(issues)
+    issues = find_sanity_issues(indicators=current)
+    suspect = indicators_to_recompute(issues=issues)
 
     to_fix = sorted(set(missing + suspect))
     if not to_fix:
@@ -306,8 +323,8 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     f"{write_folder}/{stock_id}_{analysis_date}_manager_decision_{experiment_id}.json"
                 )
 
-                existing_analyst_output = _load_json(analyst_output_file)
-                existing_manager_payload = _load_json(manager_file)
+                existing_analyst_output = _load_json(path=analyst_output_file)
+                existing_manager_payload = _load_json(path=manager_file)
                 if (
                     os.path.exists(analyst_file)
                     and existing_analyst_output is not None
@@ -324,40 +341,40 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     start = time.time()
                     base_feedback = "Compute all 32 indicators."
                     result = analyse(
-                        agent,
-                        name,
-                        cnpj,
-                        price_str,
-                        analysis_date,
-                        experiment_metadata,
-                        base_feedback,
+                        agent=agent,
+                        name=name,
+                        cnpj=cnpj,
+                        price=price_str,
+                        analysis_date=analysis_date,
+                        experiment_metadata=experiment_metadata,
+                        feedback=base_feedback,
                     )
 
                     if experiment_metadata.reflection:
                         result = guardrail_reflection(
-                            agent,
-                            name,
-                            cnpj,
-                            price_str,
-                            analysis_date,
-                            result,
-                            experiment_metadata,
+                            agent=agent,
+                            name=name,
+                            cnpj=cnpj,
+                            price=price_str,
+                            analysis_date=analysis_date,
+                            result=result,
+                            experiment_metadata=experiment_metadata,
                         )
 
                     end = time.time()
                     save_results(
-                        write_folder,
-                        stock_id,
-                        result,
-                        end - start,
-                        experiment_id,
+                        write_folder=write_folder,
+                        stock_id=stock_id,
+                        result=result,
+                        elapsed_time=(end - start),
+                        experiment_id=experiment_id,
                         analysis_date=analysis_date,
                     )
                     indicators_payload = result.final_output.model_dump()
                     indicators_payload["analysis_date"] = analysis_date
-                    indicators_map = _to_map(result)
+                    indicators_map = _to_map(result=result)
                 else:
-                    indicators_map = _to_map_from_payload(indicators_payload)
+                    indicators_map = _to_map_from_payload(payload=indicators_payload)
 
                 if not indicators_map:
                     print(
@@ -378,13 +395,16 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     )
                     manager_start = time.time()
                     manager_result = _run_with_turn_retry(
-                        manager_agent,
-                        manager_prompt,
-                        experiment_metadata.max_turns,
+                        agent=manager_agent,
+                        inp_data=manager_prompt,
+                        max_turns=experiment_metadata.max_turns,
                         label="manager",
                     )
                     manager_end = time.time()
-                    manager_payload = get_result(manager_result, manager_end - manager_start)
+                    manager_payload = get_result(
+                        result=manager_result,
+                        elapsed_time=(manager_end - manager_start),
+                    )
 
                 if isinstance(manager_payload, dict):
                     manager_payload["analysis_date"] = analysis_date
@@ -397,18 +417,18 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
 
                 if isinstance(manager_payload, dict):
                     manager_payload["output"] = manager_output
-                    _save_json(manager_file, manager_payload)
+                    _save_json(path=manager_file, payload=manager_payload)
 
-                _save_json(manager_decision_file, manager_output)
+                _save_json(path=manager_decision_file, payload=manager_output)
 
                 merged_output = dict(indicators_payload)
                 merged_output["analysis_date"] = analysis_date
                 merged_output["manager"] = manager_output
-                _save_json(analyst_output_file, merged_output)
+                _save_json(path=analyst_output_file, payload=merged_output)
 
-                analyst_payload = _load_json(analyst_file)
+                analyst_payload = _load_json(path=analyst_file)
                 if isinstance(analyst_payload, dict):
                     analyst_payload["analysis_date"] = analysis_date
                     analyst_payload["manager"] = manager_payload
-                    _save_json(analyst_file, analyst_payload)
+                    _save_json(path=analyst_file, payload=analyst_payload)
                 time.sleep(10)

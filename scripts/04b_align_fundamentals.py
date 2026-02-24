@@ -54,7 +54,7 @@ def load_daily_returns() -> pd.DataFrame:
     if p.exists():
         df = pd.read_csv(p)
     else:
-        df = load_daily_returns_from_sqlite(PRICES_DB_PATH)
+        df = load_daily_returns_from_sqlite(db_path=PRICES_DB_PATH)
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
@@ -106,7 +106,7 @@ def load_companyfacts() -> pd.DataFrame:
     if p.exists():
         df = pd.read_csv(p, dtype={"ticker": str, "concept": str, "unit": str}, low_memory=False)
     else:
-        df = load_companyfacts_from_sqlite(FACTS_DB_PATH)
+        df = load_companyfacts_from_sqlite(db_path=FACTS_DB_PATH)
 
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
     df["concept"] = df["concept"].astype(str).str.strip()
@@ -422,17 +422,17 @@ def main() -> None:
     daily = load_daily_returns()
     facts = load_companyfacts()
 
-    facts = filter_concepts(facts, CONCEPTS)
-    facts = choose_single_unit(facts)
-    facts = keep_latest_per_filed_date(facts)
+    facts = filter_concepts(df=facts, concepts=CONCEPTS)
+    facts = choose_single_unit(df=facts)
+    facts = keep_latest_per_filed_date(df=facts)
 
-    wide = fundamentals_wide_by_filed(facts)
-    panel = merge_fundamentals_daily(daily, wide)
+    wide = fundamentals_wide_by_filed(df=facts)
+    panel = merge_fundamentals_daily(daily=daily, wide_facts=wide)
 
-    save_outputs(panel, wide)
+    save_outputs(panel=panel, wide_facts=wide)
 
-    create_panel_tables(PANEL_DB_PATH)
-    insert_panel_sqlite(PANEL_DB_PATH, panel, wide)
+    create_panel_tables(db_path=PANEL_DB_PATH)
+    insert_panel_sqlite(db_path=PANEL_DB_PATH, panel=panel, wide=wide)
 
     print("Done")
 

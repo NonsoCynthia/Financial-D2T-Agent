@@ -33,7 +33,7 @@ def load_prices_long(csv_path: Path, db_path: Path) -> pd.DataFrame:
     if csv_path.exists():
         df = pd.read_csv(csv_path)
     else:
-        df = load_prices_long_from_sqlite(db_path)
+        df = load_prices_long_from_sqlite(db_path=db_path)
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
@@ -201,14 +201,14 @@ def main() -> None:
     - Writes returns into SQLite
     """
     prices_csv = PRICES_RAW_DIR / "all_prices_long.csv"
-    df = load_prices_long(prices_csv, PRICES_DB_PATH)
+    df = load_prices_long(csv_path=prices_csv, db_path=PRICES_DB_PATH)
 
-    df = add_returns(df)
+    df = add_returns(df=df)
 
-    save_outputs(df, OUT_DIR)
+    save_outputs(df=df, out_dir=OUT_DIR)
 
-    create_returns_table(PRICES_DB_PATH)
-    insert_returns_sqlite(PRICES_DB_PATH, df)
+    create_returns_table(db_path=PRICES_DB_PATH)
+    insert_returns_sqlite(db_path=PRICES_DB_PATH, df=df)
 
 
 if __name__ == "__main__":

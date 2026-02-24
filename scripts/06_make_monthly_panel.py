@@ -37,7 +37,7 @@ def build_monthly_panel(daily_panel_csv: Path) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    first_rows = _add_simple_price_columns(first_rows)
+    first_rows = _add_simple_price_columns(monthly=first_rows)
 
     return first_rows
 
@@ -61,18 +61,18 @@ def _add_simple_price_columns(monthly: pd.DataFrame) -> pd.DataFrame:
 
     out = monthly.copy()
 
-    o = _get_numeric_series(out, ["Open", "open", "price_open"])
-    h = _get_numeric_series(out, ["High", "high", "price_high"])
-    l = _get_numeric_series(out, ["Low", "low", "price_low"])
-    c = _get_numeric_series(out, ["Close", "close", "price_close"])
-    v = _get_numeric_series(out, ["Volume", "volume", "price_volume"])
+    o = _get_numeric_series(df=out, candidates=["Open", "open", "price_open"])
+    h = _get_numeric_series(df=out, candidates=["High", "high", "price_high"])
+    l = _get_numeric_series(df=out, candidates=["Low", "low", "price_low"])
+    c = _get_numeric_series(df=out, candidates=["Close", "close", "price_close"])
+    v = _get_numeric_series(df=out, candidates=["Volume", "volume", "price_volume"])
 
     cols_for_avg: list[pd.Series] = [s for s in [o, h, l, c] if isinstance(s, pd.Series)]
 
     if cols_for_avg:
         avg = pd.concat(cols_for_avg, axis=1).mean(axis=1, skipna=True)
     else:
-        adj = _get_numeric_series(out, ["Adj Close", "Adj_Close", "adj_close", "AdjClose"])
+        adj = _get_numeric_series(df=out, candidates=["Adj Close", "Adj_Close", "adj_close", "AdjClose"])
         avg = adj if isinstance(adj, pd.Series) else pd.Series([pd.NA] * len(out), index=out.index)
 
     out["price_open"] = o
@@ -124,13 +124,13 @@ def main() -> None:
     if not daily_csv.exists():
         raise FileNotFoundError(f"Missing daily panel CSV: {daily_csv}")
 
-    monthly = build_monthly_panel(daily_csv)
+    monthly = build_monthly_panel(daily_panel_csv=daily_csv)
 
     out_csv = PANEL_DIR / "monthly_panel_prices_returns_fundamentals.csv"
-    save_monthly_outputs(monthly, out_csv)
+    save_monthly_outputs(monthly=monthly, out_csv=out_csv)
 
     db_path = PANEL_DIR / "panel.db"
-    save_monthly_to_sqlite(monthly, db_path, "US_MONTHLY_PANEL")
+    save_monthly_to_sqlite(monthly=monthly, db_path=db_path, table_name="US_MONTHLY_PANEL")
 
     print("Done")
 

@@ -40,8 +40,8 @@ if __name__ == "__main__":
         is_error = False
         try:
             # Preferred production setting
-            run_one(Model.GPT_5_MINI, reflection=False)
-            run_one(Model.GPT_5_MINI, reflection=True)
+            run_one(model=Model.GPT_5_MINI, reflection=False)
+            run_one(model=Model.GPT_5_MINI, reflection=True)
 
         except Exception as e:
             print(f"Error: {e}. Retrying in 1 minute.")

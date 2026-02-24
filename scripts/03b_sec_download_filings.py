@@ -70,7 +70,7 @@ def main() -> None:
             cik10 = row["cik10"]
 
             sub_url = f"https://data.sec.gov/submissions/CIK{cik10}.json"
-            sub = fetch_json(session, sub_url, SEC_HEADERS_BASE)
+            sub = fetch_json(session=session, url=sub_url, headers=SEC_HEADERS_BASE)
             if sub is None:
                 print(f"Missing submissions for {ticker} (CIK {cik10})")
                 continue
@@ -89,11 +89,11 @@ def main() -> None:
                 if form not in {"10-K", "10-Q"}:
                     continue
 
-                d = parse_ymd(fdate)
+                d = parse_ymd(s=fdate)
                 if d is None or not (START_FILED <= d <= END_FILED):
                     continue
 
-                url = filing_url(cik10, acc, pdoc)
+                url = filing_url(cik10=cik10, accession=acc, primary_doc=pdoc)
                 ext = pdoc.split(".")[-1] if "." in pdoc else "txt"
                 out_path = out_ticker_dir / f"{fdate}_{form}_{acc}.{ext}"
 

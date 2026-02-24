@@ -35,7 +35,7 @@ def spotcheck_pe_pb(model_outputs: Dict[str, Dict[str, float]], tickers: List[st
     """
     rows = []
     for t in tickers:
-        y_pe, y_pb = yahoo_pe_pb(t)
+        y_pe, y_pb = yahoo_pe_pb(ticker=t)
         pe_model = float(model_outputs.get(t, {}).get("P_E", 0.0))
         pb_model = float(model_outputs.get(t, {}).get("P_B", 0.0))
         rows.append(

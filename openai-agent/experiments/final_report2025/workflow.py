@@ -88,7 +88,7 @@ def get_stock_report(ticker: str, end_date: str) -> str:
     WHERE TICKER = '{ticker}' AND END_DATE = '{end_date}'
     ORDER BY CONCEPT, FILED_DATE;
     """
-    return run_sql_query({"sql_query": query}, db_path=DB_PATH).get("report", "")
+    return run_sql_query(inp={"sql_query": query}, db_path=DB_PATH).get("report", "")
 
 
 def get_stock_composition(ticker: str, end_date: str) -> str:
@@ -100,7 +100,7 @@ def get_stock_composition(ticker: str, end_date: str) -> str:
       AND CONCEPT IN ('CommonStockSharesOutstanding', 'EarningsPerShareBasic')
     ORDER BY CONCEPT, FILED_DATE DESC;
     """
-    return run_sql_query({"sql_query": query}, db_path=DB_PATH).get("report", "")
+    return run_sql_query(inp={"sql_query": query}, db_path=DB_PATH).get("report", "")
 
 
 def _to_map(result: RunResult) -> dict[str, float]:
@@ -178,7 +178,13 @@ def analyse(
         previous_report=previous_report,
         feedback=feedback,
     )
-    return asyncio.run(Runner.run(agent, input=inp_data, max_turns=experiment_metadata.max_turns))
+    return asyncio.run(
+        Runner.run(
+            agent=agent,
+            input=inp_data,
+            max_turns=experiment_metadata.max_turns,
+        )
+    )
 
 
 def guardrail_reflection(
@@ -197,11 +203,11 @@ def guardrail_reflection(
     experiment_metadata: ExperimentMetadata,
 ) -> RunResult:
     expected = {str(i) for i in Indicator}
-    current = _to_map(result)
+    current = _to_map(result=result)
 
     missing = [k for k in expected if (k not in current) or (current[k] == 0.0)]
-    issues = find_sanity_issues(current)
-    suspect = indicators_to_recompute(issues)
+    issues = find_sanity_issues(indicators=current)
+    suspect = indicators_to_recompute(issues=issues)
     to_fix = sorted(set(missing + suspect))
 
     if not to_fix:
@@ -215,19 +221,19 @@ def guardrail_reflection(
     )
 
     reflected = analyse(
-        agent,
-        name,
-        cnpj,
-        ticker,
-        price,
-        analysis_date,
-        end_date,
-        prev_end_date,
-        report,
-        composition,
-        previous_report,
-        experiment_metadata,
-        feedback,
+        agent=agent,
+        name=name,
+        cnpj=cnpj,
+        ticker=ticker,
+        price=price,
+        analysis_date=analysis_date,
+        end_date=end_date,
+        prev_end_date=prev_end_date,
+        report=report,
+        composition=composition,
+        previous_report=previous_report,
+        experiment_metadata=experiment_metadata,
+        feedback=feedback,
     )
     ref_map = {str(r.indicator): r for r in reflected.final_output.indicators}
 
@@ -273,12 +279,26 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                 continue
             price_str = f"{price:.2f}"  # US decimal format
 
-            end_date = get_nearest_report_end_date(stock_id, analysis_date, db_path=DB_PATH) or analysis_date
-            prev_end_date = get_previous_report_end_date(stock_id, end_date, db_path=DB_PATH) or end_date
+            end_date = (
+                get_nearest_report_end_date(
+                    ticker=stock_id,
+                    target_end_date=analysis_date,
+                    db_path=DB_PATH,
+                )
+                or analysis_date
+            )
+            prev_end_date = (
+                get_previous_report_end_date(
+                    ticker=stock_id,
+                    end_date=end_date,
+                    db_path=DB_PATH,
+                )
+                or end_date
+            )
 
-            report = get_stock_report(stock_id, end_date)
-            composition = get_stock_composition(stock_id, end_date)
-            previous_report = get_stock_report(stock_id, prev_end_date)
+            report = get_stock_report(ticker=stock_id, end_date=end_date)
+            composition = get_stock_composition(ticker=stock_id, end_date=end_date)
+            previous_report = get_stock_report(ticker=stock_id, end_date=prev_end_date)
 
             for experiment_id in range(n_times):
                 analyst_file = f"{write_folder}/{stock_id}_{analysis_date}_{experiment_id}.json"
@@ -288,8 +308,8 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     f"{write_folder}/{stock_id}_{analysis_date}_manager_decision_{experiment_id}.json"
                 )
 
-                existing_analyst_output = _load_json(analyst_output_file)
-                existing_manager_payload = _load_json(manager_file)
+                existing_analyst_output = _load_json(path=analyst_output_file)
+                existing_manager_payload = _load_json(path=manager_file)
                 if (
                     os.path.exists(analyst_file)
                     and existing_analyst_output is not None
@@ -306,52 +326,52 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     start = time.time()
                     base_feedback = "Compute all 32 indicators."
                     result = analyse(
-                        analyst_agent,
-                        name,
-                        cnpj,
-                        stock_id,
-                        price_str,
-                        analysis_date,
-                        end_date,
-                        prev_end_date,
-                        report,
-                        composition,
-                        previous_report,
-                        experiment_metadata,
-                        base_feedback,
+                        agent=analyst_agent,
+                        name=name,
+                        cnpj=cnpj,
+                        ticker=stock_id,
+                        price=price_str,
+                        analysis_date=analysis_date,
+                        end_date=end_date,
+                        prev_end_date=prev_end_date,
+                        report=report,
+                        composition=composition,
+                        previous_report=previous_report,
+                        experiment_metadata=experiment_metadata,
+                        feedback=base_feedback,
                     )
 
                     if experiment_metadata.reflection:
                         result = guardrail_reflection(
-                            analyst_agent,
-                            name,
-                            cnpj,
-                            stock_id,
-                            price_str,
-                            analysis_date,
-                            end_date,
-                            prev_end_date,
-                            report,
-                            composition,
-                            previous_report,
-                            result,
-                            experiment_metadata,
+                            agent=analyst_agent,
+                            name=name,
+                            cnpj=cnpj,
+                            ticker=stock_id,
+                            price=price_str,
+                            analysis_date=analysis_date,
+                            end_date=end_date,
+                            prev_end_date=prev_end_date,
+                            report=report,
+                            composition=composition,
+                            previous_report=previous_report,
+                            result=result,
+                            experiment_metadata=experiment_metadata,
                         )
 
                     end = time.time()
                     save_results(
-                        write_folder,
-                        stock_id,
-                        result,
-                        end - start,
-                        experiment_id,
+                        write_folder=write_folder,
+                        stock_id=stock_id,
+                        result=result,
+                        elapsed_time=(end - start),
+                        experiment_id=experiment_id,
                         analysis_date=analysis_date,
                     )
                     indicators_payload = result.final_output.model_dump()
                     indicators_payload["analysis_date"] = analysis_date
-                    indicators_map = _to_map(result)
+                    indicators_map = _to_map(result=result)
                 else:
-                    indicators_map = _to_map_from_payload(indicators_payload)
+                    indicators_map = _to_map_from_payload(payload=indicators_payload)
 
                 if not indicators_map:
                     print(
@@ -372,10 +392,17 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     )
                     manager_start = time.time()
                     manager_result = asyncio.run(
-                        Runner.run(manager_agent, input=manager_prompt, max_turns=experiment_metadata.max_turns)
+                        Runner.run(
+                            agent=manager_agent,
+                            input=manager_prompt,
+                            max_turns=experiment_metadata.max_turns,
+                        )
                     )
                     manager_end = time.time()
-                    manager_payload = get_result(manager_result, manager_end - manager_start)
+                    manager_payload = get_result(
+                        result=manager_result,
+                        elapsed_time=(manager_end - manager_start),
+                    )
 
                 if isinstance(manager_payload, dict):
                     manager_payload["analysis_date"] = analysis_date
@@ -388,18 +415,18 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
 
                 if isinstance(manager_payload, dict):
                     manager_payload["output"] = manager_output
-                    _save_json(manager_file, manager_payload)
+                    _save_json(path=manager_file, payload=manager_payload)
 
-                _save_json(manager_decision_file, manager_output)
+                _save_json(path=manager_decision_file, payload=manager_output)
 
                 merged_output = dict(indicators_payload)
                 merged_output["analysis_date"] = analysis_date
                 merged_output["manager"] = manager_output
-                _save_json(analyst_output_file, merged_output)
+                _save_json(path=analyst_output_file, payload=merged_output)
 
-                analyst_payload = _load_json(analyst_file)
+                analyst_payload = _load_json(path=analyst_file)
                 if isinstance(analyst_payload, dict):
                     analyst_payload["analysis_date"] = analysis_date
                     analyst_payload["manager"] = manager_payload
-                    _save_json(analyst_file, analyst_payload)
+                    _save_json(path=analyst_file, payload=analyst_payload)
                 time.sleep(10)

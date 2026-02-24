@@ -54,7 +54,7 @@ def _load_pred_outputs(folder: Path) -> List[Tuple[str, int, str | None, Dict[st
     for p in sorted(folder.glob("*_output_*.json")):
         name = p.name
         try:
-            ticker, stem_left, run_id, parsed_analysis_date = _parse_output_filename(name)
+            ticker, stem_left, run_id, parsed_analysis_date = _parse_output_filename(name=name)
         except ValueError:
             continue
 
@@ -102,7 +102,7 @@ def score_one(y_true: Dict[str, float], y_pred: Dict[str, float]) -> float:
     keys = [str(i) for i in Indicator]
     yt = np.array([float(y_true.get(k, 0.0)) for k in keys], dtype=float)
     yp = np.array([float(y_pred.get(k, 0.0)) for k in keys], dtype=float)
-    return _nmae(yt, yp) + (ALPHA * _penalty_rate(yt, yp))
+    return _nmae(y_true=yt, y_pred=yp) + (ALPHA * _penalty_rate(y_true=yt, y_pred=yp))
 
 
 def evaluate_folder(pred_folder: Path, gold_csv: Path) -> pd.DataFrame:
@@ -125,7 +125,7 @@ def evaluate_folder(pred_folder: Path, gold_csv: Path) -> pd.DataFrame:
     gold = gold.sort_values(["ticker", "date"]).reset_index(drop=True)
     gold_by_ticker = {t: df for t, df in gold.groupby("ticker")}
 
-    preds = _load_pred_outputs(pred_folder)
+    preds = _load_pred_outputs(folder=pred_folder)
 
     rows = []
     for ticker, run_id, analysis_date, pred_map, usage in preds:
@@ -144,7 +144,7 @@ def evaluate_folder(pred_folder: Path, gold_csv: Path) -> pd.DataFrame:
             chosen = ticker_gold.iloc[-1]
 
         gold_values = {c: float(chosen[c]) for c in expected_cols}
-        s = score_one(gold_values, pred_map)
+        s = score_one(y_true=gold_values, y_pred=pred_map)
         rows.append(
             {
                 "ticker": ticker,
@@ -178,7 +178,7 @@ def summarise_experiment(root_results: Path, gold_csv: Path) -> pd.DataFrame:
                 folder = root_results / model / f"{arch}_{reflection}"
                 if not folder.exists():
                     continue
-                df = evaluate_folder(folder, gold_csv)
+                df = evaluate_folder(pred_folder=folder, gold_csv=gold_csv)
                 if df.empty:
                     continue
                 summaries.append(
@@ -202,7 +202,7 @@ def load_manager_decisions(folder: Path) -> pd.DataFrame:
     for p in sorted(folder.glob("*_output_*.json")):
         name = p.name
         try:
-            ticker, _, run_id, parsed_analysis_date = _parse_output_filename(name)
+            ticker, _, run_id, parsed_analysis_date = _parse_output_filename(name=name)
         except ValueError:
             continue
 
@@ -289,7 +289,7 @@ def _manager_strategy_returns(
     work["position"] = work["recommendation"].map(_position_from_recommendation)
     work = work.sort_values(["ticker", "run_id", "analysis_date"]).reset_index(drop=True)
 
-    prices_by_ticker = _load_price_panel(gold_csv)
+    prices_by_ticker = _load_price_panel(gold_csv=gold_csv)
     rows: List[Dict[str, object]] = []
 
     for (_, _), grp in work.groupby(["ticker", "run_id"], as_index=False):
@@ -308,8 +308,8 @@ def _manager_strategy_returns(
             start_dt = pd.Timestamp(cur["analysis_date"])
             end_dt = pd.Timestamp(nxt["analysis_date"])
 
-            start_px = _price_on_or_before(price_df, start_dt)
-            end_px = _price_on_or_before(price_df, end_dt)
+            start_px = _price_on_or_before(price_df=price_df, dt=start_dt)
+            end_px = _price_on_or_before(price_df=price_df, dt=end_dt)
             if start_px is None or end_px is None or start_px <= 0:
                 continue
 
@@ -359,7 +359,7 @@ def summarise_manager_folder(
     risk_free_annual: float = 0.0,
     periods_per_year: int = 12,
 ) -> pd.DataFrame:
-    df = load_manager_decisions(folder)
+    df = load_manager_decisions(folder=folder)
     if df.empty:
         return df
 
@@ -375,7 +375,7 @@ def summarise_manager_folder(
 
     if gold_csv is not None:
         try:
-            strat = _manager_strategy_returns(df, gold_csv=gold_csv)
+            strat = _manager_strategy_returns(decisions=df, gold_csv=gold_csv)
         except Exception:
             strat = pd.DataFrame()
         if strat.empty:
@@ -388,11 +388,7 @@ def summarise_manager_folder(
             row["n_return_obs"] = int(len(strat))
             row["mean_strategy_return"] = float(strat["strategy_return"].mean())
             row["vol_strategy_return"] = float(strat["strategy_return"].std(ddof=1)) if len(strat) > 1 else np.nan
-            row["sharpe_ratio"] = _annualized_sharpe(
-                strat["strategy_return"],
-                risk_free_annual=risk_free_annual,
-                periods_per_year=periods_per_year,
-            )
+            row["sharpe_ratio"] = _annualized_sharpe(returns=strat["strategy_return"], risk_free_annual=risk_free_annual, periods_per_year=periods_per_year)
             row["hit_rate"] = float((strat["strategy_return"] > 0).mean())
 
     out = pd.DataFrame([row])
@@ -412,12 +408,7 @@ def summarise_manager_experiment(
                 folder = root_results / model / f"{arch}_{reflection}"
                 if not folder.exists():
                     continue
-                msum = summarise_manager_folder(
-                    folder,
-                    gold_csv=gold_csv,
-                    risk_free_annual=risk_free_annual,
-                    periods_per_year=periods_per_year,
-                )
+                msum = summarise_manager_folder(folder=folder, gold_csv=gold_csv, risk_free_annual=risk_free_annual, periods_per_year=periods_per_year)
                 if msum.empty:
                     continue
                 row = msum.iloc[0].to_dict()
@@ -495,7 +486,7 @@ def main() -> int:
         if not pred_folder.exists():
             raise SystemExit(f"Prediction folder not found: {pred_folder}")
 
-        df = evaluate_folder(pred_folder, gold_csv)
+        df = evaluate_folder(pred_folder=pred_folder, gold_csv=gold_csv)
         if df.empty:
             print("No indicator predictions found for scoring.")
         else:
@@ -511,12 +502,7 @@ def main() -> int:
                 df.to_csv(out_csv, index=False)
                 print(f"Saved indicator evaluation to {out_csv}")
 
-        manager_df = summarise_manager_folder(
-            pred_folder,
-            gold_csv=gold_csv,
-            risk_free_annual=args.risk_free_annual,
-            periods_per_year=args.periods_per_year,
-        )
+        manager_df = summarise_manager_folder(folder=pred_folder, gold_csv=gold_csv, risk_free_annual=args.risk_free_annual, periods_per_year=args.periods_per_year)
         if manager_df.empty:
             print("No manager decisions found in this folder.")
         else:
@@ -535,7 +521,7 @@ def main() -> int:
     if not results_root.exists():
         raise SystemExit(f"Results root not found: {results_root}")
 
-    summary_df = summarise_experiment(results_root, gold_csv)
+    summary_df = summarise_experiment(root_results=results_root, gold_csv=gold_csv)
     if summary_df.empty:
         print("No indicator experiment folders found for summary.")
     else:
@@ -546,12 +532,7 @@ def main() -> int:
             summary_df.to_csv(out_csv, index=False)
             print(f"Saved indicator summary to {out_csv}")
 
-    manager_summary_df = summarise_manager_experiment(
-        results_root,
-        gold_csv=gold_csv,
-        risk_free_annual=args.risk_free_annual,
-        periods_per_year=args.periods_per_year,
-    )
+    manager_summary_df = summarise_manager_experiment(root_results=results_root, gold_csv=gold_csv, risk_free_annual=args.risk_free_annual, periods_per_year=args.periods_per_year)
     if manager_summary_df.empty:
         print("No manager decisions found across experiment folders.")
     else:

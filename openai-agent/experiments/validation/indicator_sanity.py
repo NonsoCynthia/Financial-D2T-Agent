@@ -22,10 +22,10 @@ def find_sanity_issues(indicators: Dict[str, float]) -> List[SanityIssue]:
         except Exception:
             return 0.0
 
-    pe = v("P_E")
-    pb = v("P_B")
-    eps = v("EPS")
-    bvps = v("BVPS")
+    pe = v(name="P_E")
+    pb = v(name="P_B")
+    eps = v(name="EPS")
+    bvps = v(name="BVPS")
 
     # Valuation sanity
     if pe < 0:
@@ -47,12 +47,12 @@ def find_sanity_issues(indicators: Dict[str, float]) -> List[SanityIssue]:
     # Percentage sanity. These are returned as percent numbers.
     percent_metrics = ["GrossMargin", "EBITMargin", "NetMargin", "EBIT_Assets", "ROE", "ROIC"]
     for m in percent_metrics:
-        x = v(m)
+        x = v(name=m)
         if x < -200 or x > 200:
             issues.append(SanityIssue(m, f"{m} is outside [-200, 200] percent. Verify numerator and denominator."))
 
     # Liquidity sanity
-    cr = v("CurrentRatio")
+    cr = v(name="CurrentRatio")
     if cr < 0:
         issues.append(SanityIssue("CurrentRatio", "CurrentRatio is negative. Verify current assets and liabilities."))
     if cr > 50:

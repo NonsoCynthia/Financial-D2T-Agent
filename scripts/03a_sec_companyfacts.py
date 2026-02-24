@@ -118,7 +118,7 @@ def main() -> None:
     con = sqlite3.connect(str(OUT_DB))
 
     try:
-        create_schema(con)
+        create_schema(con=con)
 
         total_rows = 0
 
@@ -127,7 +127,7 @@ def main() -> None:
 
             df = pd.read_csv(file_path, low_memory=False)
 
-            df = normalise_columns(df)
+            df = normalise_columns(df=df)
 
             df["VALUE_REAL"] = pd.to_numeric(df["VALUE_REAL"], errors="coerce")
 

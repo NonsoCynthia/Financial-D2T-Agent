@@ -52,10 +52,10 @@ def main() -> None:
     SEC_MAP_DIR.mkdir(parents=True, exist_ok=True)
 
     with requests.Session() as session:
-        raw = fetch_json(session, SEC_TICKER_MAP_URL, SEC_HEADERS_BASE)
+        raw = fetch_json(session=session, url=SEC_TICKER_MAP_URL, headers=SEC_HEADERS_BASE)
 
-    df_all = build_ticker_cik_df(raw)
-    df_sel = filter_to_tickers(df_all, TICKERS)
+    df_all = build_ticker_cik_df(raw=raw)
+    df_sel = filter_to_tickers(df=df_all, tickers=TICKERS)
 
     out_all = SEC_MAP_DIR / "sec_ticker_cik_all.csv"
     out_sel = SEC_MAP_DIR / "sec_ticker_cik_selected.csv"

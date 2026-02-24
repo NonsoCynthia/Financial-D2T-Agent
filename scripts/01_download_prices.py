@@ -104,7 +104,7 @@ def build_long_table(df_raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
 
     for t in tickers:
         try:
-            df_t = normalise_one(df_raw, t)
+            df_t = normalise_one(df_raw=df_raw, ticker=t)
         except Exception as e:
             print(f"Skipping {t}. {e}")
             continue
@@ -256,14 +256,14 @@ def main() -> None:
     PRICES_RAW_DIR.mkdir(parents=True, exist_ok=True)
 
     tickers = [t.strip().upper() for t in TICKERS if t.strip()]
-    df_raw = download_bundle(tickers, START_DATE, END_DATE_EXCLUSIVE)
+    df_raw = download_bundle(tickers=tickers, start=START_DATE, end_exclusive=END_DATE_EXCLUSIVE)
 
-    df_long = build_long_table(df_raw, tickers)
-    save_csv_and_parquet(df_long)
+    df_long = build_long_table(df_raw=df_raw, tickers=tickers)
+    save_csv_and_parquet(df_long=df_long)
 
     sec_map = load_sec_map_if_available()
-    create_prices_table(PRICES_DB_PATH)
-    insert_prices_sqlite(PRICES_DB_PATH, df_long, sec_map)
+    create_prices_table(db_path=PRICES_DB_PATH)
+    insert_prices_sqlite(db_path=PRICES_DB_PATH, df_long=df_long, sec_map=sec_map)
 
     print(f"Done. {START_DATE} to {END_DATE_INCLUSIVE} inclusive")
 

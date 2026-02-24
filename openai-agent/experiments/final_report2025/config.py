@@ -45,7 +45,7 @@ def _monthly_end_dates(start_date: str, end_date: str) -> list[str]:
     return out
 
 
-ANALYSIS_DATES = _monthly_end_dates(ANALYSIS_START_DATE, ANALYSIS_END_DATE)
+ANALYSIS_DATES = _monthly_end_dates(start_date=ANALYSIS_START_DATE, end_date=ANALYSIS_END_DATE)
 if not ANALYSIS_DATES:
     ANALYSIS_DATES = [ANALYSIS_END_DATE]
 
@@ -74,12 +74,12 @@ def _cik10_for_ticker(ticker: str) -> str:
 
 
 STOCKS = [
-    StockInput(name="Tesla", cnpj=_cik10_for_ticker("TSLA"), stock_id="TSLA"),
-    StockInput(name="Amazon", cnpj=_cik10_for_ticker("AMZN"), stock_id="AMZN"),
-    StockInput(name="Microsoft", cnpj=_cik10_for_ticker("MSFT"), stock_id="MSFT"),
-    StockInput(name="Apple", cnpj=_cik10_for_ticker("AAPL"), stock_id="AAPL"),
-    StockInput(name="Alphabet", cnpj=_cik10_for_ticker("GOOG"), stock_id="GOOG"),
-    StockInput(name="Netflix", cnpj=_cik10_for_ticker("NFLX"), stock_id="NFLX"),
-    StockInput(name="Coinbase", cnpj=_cik10_for_ticker("COIN"), stock_id="COIN"),
-    StockInput(name="NIO", cnpj=_cik10_for_ticker("NIO"), stock_id="NIO"),
+    StockInput(name="Tesla", cnpj=_cik10_for_ticker(ticker="TSLA"), stock_id="TSLA"),
+    StockInput(name="Amazon", cnpj=_cik10_for_ticker(ticker="AMZN"), stock_id="AMZN"),
+    StockInput(name="Microsoft", cnpj=_cik10_for_ticker(ticker="MSFT"), stock_id="MSFT"),
+    StockInput(name="Apple", cnpj=_cik10_for_ticker(ticker="AAPL"), stock_id="AAPL"),
+    StockInput(name="Alphabet", cnpj=_cik10_for_ticker(ticker="GOOG"), stock_id="GOOG"),
+    StockInput(name="Netflix", cnpj=_cik10_for_ticker(ticker="NFLX"), stock_id="NFLX"),
+    StockInput(name="Coinbase", cnpj=_cik10_for_ticker(ticker="COIN"), stock_id="COIN"),
+    StockInput(name="NIO", cnpj=_cik10_for_ticker(ticker="NIO"), stock_id="NIO"),
 ]

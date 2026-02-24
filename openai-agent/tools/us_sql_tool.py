@@ -94,7 +94,7 @@ def us_reports_query_tool(inp: QueryInput) -> dict:
     - Only a single SELECT query is allowed.
     """
     sql = inp.get("sql_query", "")
-    if not _is_read_only_select(sql):
+    if not _is_read_only_select(sql=sql):
         return {"status": "error", "report": "Rejected. Only a single read-only SELECT query is allowed."}
     return run_sql_query(inp, db_path=DB_PATH)
 
@@ -111,6 +111,6 @@ def us_share_composition_query_tool(inp: QueryInput) -> dict:
     - Only a single SELECT query is allowed.
     """
     sql = inp.get("sql_query", "")
-    if not _is_read_only_select(sql):
+    if not _is_read_only_select(sql=sql):
         return {"status": "error", "report": "Rejected. Only a single read-only SELECT query is allowed."}
     return run_sql_query(inp, db_path=DB_PATH)

@@ -80,7 +80,7 @@ def _to_float(x: Any) -> Optional[float]:
 def _pick_numeric(d: Dict[str, Any], keys: List[str]) -> Optional[float]:
     for k in keys:
         if k in d:
-            v = _to_float(d.get(k))
+            v = _to_float(x=d.get(k))
             if v is not None:
                 return v
     return None
@@ -117,7 +117,7 @@ def _pick_asof_value(row: Optional[pd.Series], as_of_date: pd.Timestamp) -> Opti
     s = s[s.index <= as_of_date]
     if s.empty:
         return None
-    return _to_float(s.iloc[-1])
+    return _to_float(x=s.iloc[-1])
 
 
 def _fetch_price_asof(ticker: yf.Ticker, as_of_date: pd.Timestamp) -> Optional[float]:
@@ -136,7 +136,7 @@ def _fetch_price_asof(ticker: yf.Ticker, as_of_date: pd.Timestamp) -> Optional[f
     hist = hist[hist.index <= as_of_date]
     if hist.empty:
         return None
-    return _to_float(hist.iloc[-1].get("Close"))
+    return _to_float(x=hist.iloc[-1].get("Close"))
 
 
 def fetch_yahoo_snapshot(symbol: str, as_of_date: str) -> Dict[str, Optional[float]]:
@@ -149,29 +149,41 @@ def fetch_yahoo_snapshot(symbol: str, as_of_date: str) -> Dict[str, Optional[flo
     qis = t.quarterly_income_stmt
     info = t.info if isinstance(getattr(t, "info", None), dict) else {}
 
-    assets = _pick_asof_value(_pick_series_row(qbs, ["Total Assets"]), dt)
+    assets = _pick_asof_value(
+        row=_pick_series_row(df=qbs, aliases=["Total Assets"]),
+        as_of_date=dt,
+    )
     cash = _pick_asof_value(
-        _pick_series_row(
-            qbs,
-            [
+        row=_pick_series_row(
+            df=qbs,
+            aliases=[
                 "Cash And Cash Equivalents",
                 "Cash And Short Term Investments",
                 "Cash Cash Equivalents And Short Term Investments",
             ],
         ),
-        dt,
+        as_of_date=dt,
     )
-    revenue = _pick_asof_value(_pick_series_row(qis, ["Total Revenue", "Revenue"]), dt)
-    ebit = _pick_asof_value(_pick_series_row(qis, ["EBIT", "Operating Income"]), dt)
-    net_profit = _pick_asof_value(_pick_series_row(qis, ["Net Income", "Net Income Common Stockholders"]), dt)
+    revenue = _pick_asof_value(
+        row=_pick_series_row(df=qis, aliases=["Total Revenue", "Revenue"]),
+        as_of_date=dt,
+    )
+    ebit = _pick_asof_value(
+        row=_pick_series_row(df=qis, aliases=["EBIT", "Operating Income"]),
+        as_of_date=dt,
+    )
+    net_profit = _pick_asof_value(
+        row=_pick_series_row(df=qis, aliases=["Net Income", "Net Income Common Stockholders"]),
+        as_of_date=dt,
+    )
 
-    price = _fetch_price_asof(t, dt)
-    eps = _to_float(info.get("trailingEps"))
-    pe = _to_float(info.get("trailingPE"))
-    pb = _to_float(info.get("priceToBook"))
+    price = _fetch_price_asof(ticker=t, as_of_date=dt)
+    eps = _to_float(x=info.get("trailingEps"))
+    pe = _to_float(x=info.get("trailingPE"))
+    pb = _to_float(x=info.get("priceToBook"))
 
     if pe is None and price is not None and eps not in (None, 0.0):
-        pe = _to_float(price / eps)
+        pe = _to_float(x=price / eps)
 
     return {
         "Assets": assets,
@@ -187,10 +199,10 @@ def fetch_yahoo_snapshot(symbol: str, as_of_date: str) -> Dict[str, Optional[flo
 
 
 def _extract_pred_map(indicators: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    m = indicators_to_canonical_map(indicators)
+    m = indicators_to_canonical_map(indicators=indicators)
     out: Dict[str, Optional[float]] = {}
     for k in TARGET_KEYS:
-        out[k] = _to_float(m.get(k))
+        out[k] = _to_float(x=m.get(k))
     return out
 
 
@@ -205,13 +217,13 @@ def detect_mode(folder: Path) -> str:
 def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List[str]]) -> List[Dict[str, Any]]:
     month = month.strip()
     out: List[Dict[str, Any]] = []
-    keep = set([canonical_ticker(t) for t in (tickers or []) if str(t).strip()])
+    keep = set([canonical_ticker(ticker=t) for t in (tickers or []) if str(t).strip()])
 
     if mode == "workflow":
         files = sorted(folder.glob("*_workflow_output_*.json"))
         for p in files:
             payload = json.loads(p.read_text(encoding="utf-8"))
-            ticker = canonical_ticker(payload.get("ticker", ""))
+            ticker = canonical_ticker(ticker=payload.get("ticker", ""))
             if keep and ticker not in keep:
                 continue
             for item in payload.get("outputs", []):
@@ -219,17 +231,17 @@ def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List
                 if not d:
                     continue
                 dt = pd.to_datetime(d, errors="coerce")
-                if pd.isna(dt) or canonical_month(dt) != month:
+                if pd.isna(dt) or canonical_month(value=dt) != month:
                     continue
                 indicators_raw = ((item.get("indicator_analysis") or {}).get("values") or {})
                 if not isinstance(indicators_raw, (dict, list)):
                     continue
-                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators_raw)})
+                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators=indicators_raw)})
     else:
         files = sorted(folder.glob("*_output_*.json"))
         for p in files:
             payload = json.loads(p.read_text(encoding="utf-8"))
-            ticker = canonical_ticker(payload.get("ticker", ""))
+            ticker = canonical_ticker(ticker=payload.get("ticker", ""))
             if keep and ticker not in keep:
                 continue
             for item in payload.get("outputs", []):
@@ -237,12 +249,12 @@ def load_predictions(folder: Path, mode: str, month: str, tickers: Optional[List
                 if not d:
                     continue
                 dt = pd.to_datetime(d, errors="coerce")
-                if pd.isna(dt) or canonical_month(dt) != month:
+                if pd.isna(dt) or canonical_month(value=dt) != month:
                     continue
                 indicators_raw = ((item.get("analyst") or {}).get("indicators") or {})
                 if not isinstance(indicators_raw, (dict, list)):
                     continue
-                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators_raw)})
+                out.append({"ticker": ticker, "date": dt.strftime("%Y-%m-%d"), "month": month, "pred": _extract_pred_map(indicators=indicators_raw)})
     return out
 
 
@@ -331,11 +343,11 @@ def main() -> None:
         return
 
     try:
-        mode = args.mode if args.mode != "auto" else detect_mode(args.pred_dir)
+        mode = args.mode if args.mode != "auto" else detect_mode(folder=args.pred_dir)
     except RuntimeError as e:
         print(f"{e}")
         return
-    preds = load_predictions(args.pred_dir, mode, args.month, args.tickers)
+    preds = load_predictions(folder=args.pred_dir, mode=mode, month=args.month, tickers=args.tickers)
     if not preds:
         print(f"No prediction rows found for month {args.month} in {args.pred_dir} (mode={mode}).")
         return
@@ -345,8 +357,8 @@ def main() -> None:
     for r in preds:
         key = (r["ticker"], r["date"])
         if key not in cache:
-            cache[key] = fetch_yahoo_snapshot(r["ticker"], r["date"])
-        all_rows.extend(compare_one(r["ticker"], r["date"], r["pred"], cache[key], args.tolerance))
+            cache[key] = fetch_yahoo_snapshot(symbol=r["ticker"], as_of_date=r["date"])
+        all_rows.extend(compare_one(ticker=r["ticker"], date=r["date"], pred=r["pred"], gold=cache[key], tolerance=args.tolerance))
 
     df = pd.DataFrame(all_rows)
     args.out_csv.parent.mkdir(parents=True, exist_ok=True)

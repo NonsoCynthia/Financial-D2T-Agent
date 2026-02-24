@@ -149,7 +149,7 @@ def main():
 
     for stock in STOCKS:
         ticker = stock.stock_id
-        monthly = _monthly_panel(ticker)
+        monthly = _monthly_panel(ticker=ticker)
         if monthly.empty:
             continue
 
@@ -178,20 +178,20 @@ def main():
             end_date = get_latest_assets_end_date(ticker, date_str, db_path=DB_PATH) or date_str
             prev_end = get_previous_assets_end_date(ticker, end_date, db_path=DB_PATH) or end_date
 
-            report = _prefetch_report(ticker, end_date)
-            composition = _prefetch_composition(ticker, end_date)
-            prev_report = _prefetch_report(ticker, prev_end)
+            report = _prefetch_report(ticker=ticker, end_date=end_date)
+            composition = _prefetch_composition(ticker=ticker, end_date=end_date)
+            prev_report = _prefetch_report(ticker=ticker, end_date=prev_end)
 
-            analyst_prompt = _template_workflow_prompt(stock.name, ticker, stock.cnpj, date_str, price, end_date, prev_end, report, composition, prev_report)
+            analyst_prompt = _template_workflow_prompt(name=stock.name, ticker=ticker, cik=stock.cnpj, date_str=date_str, price=price, end_date=end_date, prev_end=prev_end, report=report, composition=composition, prev_report=prev_report)
 
             t0 = time.time()
             analyst_result = Runner.run_sync(analyst_agent, input=analyst_prompt, max_turns=15)
             t1 = time.time()
 
             analyst_payload = get_result(analyst_result, t1 - t0)
-            _save_json(analyst_path, analyst_payload)
+            _save_json(path=analyst_path, payload=analyst_payload)
 
-            indicators = _flatten_indicators(analyst_payload.get("output", {}))
+            indicators = _flatten_indicators(output=analyst_payload.get("output", {}))
 
             enriched = row.to_dict()
             enriched.update(indicators)
@@ -217,7 +217,7 @@ def main():
             m1 = time.time()
 
             manager_payload = get_result(manager_result, m1 - m0)
-            _save_json(manager_path, manager_payload)
+            _save_json(path=manager_path, payload=manager_payload)
 
             decision = manager_payload.get("output", {})
             decision["stock_id"] = ticker
@@ -237,9 +237,9 @@ def main():
             ticker_decisions = [d for d in all_decisions if d["stock_id"] == ticker]
             strat = np.array([float(d.get("strategy_return", 0.0)) for d in ticker_decisions], dtype=float)
             decision["cum_return"] = float(np.prod(1.0 + strat) - 1.0)
-            decision["sharpe_12m"] = _sharpe(strat[-12:])
+            decision["sharpe_12m"] = _sharpe(monthly_returns=strat[-12:])
 
-            _save_json(f"{WRITE_FOLDER}/decisions_sample.json", all_decisions)
+            _save_json(path=f"{WRITE_FOLDER}/decisions_sample.json", payload=all_decisions)
 
             # Optional Yahoo spotcheck for a single month across tickers
             if DO_YAHOO_SPOTCHECK and date_str.startswith(SPOTCHECK_MONTH):

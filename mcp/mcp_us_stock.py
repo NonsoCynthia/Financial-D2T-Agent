@@ -69,7 +69,7 @@ def _run_sql_query(sql_query: str) -> dict[str, Any]:
     if not DB_PATH.exists():
         return {"status": "error", "report": f"Database not found: {DB_PATH}"}
 
-    if not _is_read_only_select(sql_query):
+    if not _is_read_only_select(sql=sql_query):
         return {"status": "error", "report": "Rejected. Only a single read-only SELECT query is allowed."}
 
     try:
@@ -80,7 +80,7 @@ def _run_sql_query(sql_query: str) -> dict[str, Any]:
             rows = cursor.fetchall()
             if not rows:
                 return {"status": "success", "report": "No data found with the given query"}
-            return {"status": "success", "report": _create_markdown_table(rows, columns)}
+            return {"status": "success", "report": _create_markdown_table(rows=rows, columns=columns)}
     except Exception as exc:
         return {"status": "error", "report": f"Failed to execute query: {exc}"}
 
@@ -90,7 +90,7 @@ def us_reports_query_tool(sql_query: str) -> dict[str, Any]:
     """
     Run a read-only SQL query for SEC reports/fundamental data.
     """
-    return _run_sql_query(sql_query)
+    return _run_sql_query(sql_query=sql_query)
 
 
 @mcp.tool()
@@ -98,7 +98,7 @@ def us_share_composition_query_tool(sql_query: str) -> dict[str, Any]:
     """
     Run a read-only SQL query for shares/EPS composition data.
     """
-    return _run_sql_query(sql_query)
+    return _run_sql_query(sql_query=sql_query)
 
 
 @mcp.tool()
@@ -112,7 +112,7 @@ def list_tickers(limit: int = 200) -> dict[str, Any]:
     ORDER BY TICKER
     LIMIT {int(max(1, min(limit, 2000)))}
     """
-    return _run_sql_query(sql)
+    return _run_sql_query(sql_query=sql)
 
 
 if __name__ == "__main__":
