@@ -2,6 +2,12 @@
 
 This document lists the data sources you currently use, what each one provides, and where you store it.
 
+## Config first
+Very important pipeline variables are centralised in `config.py` and consumed by `scripts/*`:
+- Date window: `START_DATE`, `END_DATE_INCLUSIVE`, `END_DATE_EXCLUSIVE`
+- Split window: `TRAIN_END`, `TEST_START`, `TEST_END`
+- Core paths/DBs/tables and benchmark output defaults
+
 ## 1) Market price data (OHLCV)
 Source: Yahoo Finance via yfinance (scripts/01_download_prices.py)
 Provides: Daily Open, High, Low, Close, Adj Close, Volume for each ticker (TSLA, AMZN, NIO, MSFT, AAPL, GOOG, NFLX, COIN) across your configured date range.
@@ -31,7 +37,7 @@ Provides: XBRL facts and metadata, including concepts such as:
 - EarningsPerShareBasic, CommonStockSharesOutstanding
 Plus fields like form (10-K, 10-Q), fiscal year, fiscal period, end date, filed date, accession number, unit, and frame where available.
 Stored as:
-- CSV data/raw/sec/companyfacts/companyfacts_2022_2025.csv
+- CSV data/raw/sec/companyfacts/companyfacts_2022_<END_YEAR>.csv
 - SQLite database data/raw/sec/sec_companyfacts.db, table SEC_COMPANYFACTS
 
 ## 5) Merged daily panel (prices + returns + fundamentals aligned)
@@ -49,7 +55,8 @@ Source: Built locally (scripts/05_make_splits.py)
 Provides: Train and test split files by date ranges.
 Stored as:
 - CSV data/processed/splits/train_2022_2024.csv
-- CSV data/processed/splits/test_2025.csv
+- CSV data/processed/splits/test_<TEST_START>_to_<TEST_END>.csv
+- Backward-compatible alias: data/processed/splits/test_2025.csv
 
 ## 7) Agent runtime inputs via MCP tools
 These are not new data sources. They are tool wrappers over your stored artefacts.
@@ -67,3 +74,23 @@ Tools exposed:
 - get_companyfacts
 - get_panel
 - get_price_series (minimal series, if enabled)
+
+## 8) ROIC gold benchmark snapshots for Table-2 evaluation
+Source: ROIC statistics page dumps parsed locally (`scripts/09_build_roic_gold_benchmark.py`)
+Provides: Gold rows for indicators such as Revenue, EBIT, Net Income, Cash, Debt, P/E, P/B, margins, ROE, and ROIC.
+
+Stored as:
+- CSV `data/processed/benchmarks/roic_gold_benchmark_<YYYY-MM-DD>.csv`
+- JSON report `data/processed/benchmarks/roic_gold_benchmark_<YYYY-MM-DD>_report.json`
+
+Important behavior:
+- The benchmark `date` uses snapshot `capture_date` (no fake monthly labels as date).
+- Snapshot values are saved once per capture date (no repeated monthly rows).
+- If latest `capture_date` changes from the previous run, a new versioned CSV is created.
+
+Quick run:
+- `python scripts/run_scripts.py --step roic_gold_benchmark`
+- Optional input override:
+  `python scripts/run_scripts.py --step roic_gold_benchmark --roic-in-dir data/roic_2026-02-23_json_dumps`
+- To generate missing ROIC dumps first:
+  `python scripts/run_scripts.py --step roic_dump_download --roic-in-dir data/roic_2026-02-23_json_dumps`

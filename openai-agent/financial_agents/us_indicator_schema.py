@@ -9,9 +9,9 @@ class USIndicator(StrEnum):
     """Canonical names for the 32 indicators fundamental analysis setup."""
 
     # Balance sheet
-    ASSETS = "Assets"
-    CURRENT_ASSETS = "CurrentAssets"
-    CASH_AND_EQUIVALENTS = "CashAndEquivalents"
+    ASSETS = "Assets" #the total assets, rights, and value that the company owns
+    CURRENT_ASSETS = "CurrentAssets" #total assets and rights that the company owns and can be converted into cash in the short term, usually in one year
+    CASH_AND_EQUIVALENTS = "CashAndEquivalents" #the amounts that the company has in cash, banks, and cash equivalents
     GROSS_DEBT = "GrossDebt" #Crosscheck with: GrossDebt = ShortTermDebt + LongTermDebt
     NET_DEBT = "NetDebt" #Crosscheck with:NET_DEBT = GROSS_DEBT - CASH_AND_EQUIVALENTS
     SHAREHOLDERS_EQUITY = "ShareholdersEquity" #Crosscheck with: ShareholdersEquity = Assets - TotalLiabilities

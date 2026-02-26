@@ -3,7 +3,7 @@
 Yahoo gold-standard spot check for model-generated indicators.
 
 Compares predicted indicators to Yahoo Finance-derived snapshots for one month
-(default: 2025-04), then writes a comparison table for manual validation.
+(default: month of END_DATE_INCLUSIVE), then writes a comparison table for manual validation.
 """
 
 from __future__ import annotations
@@ -18,6 +18,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import yfinance as yf
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from config import (
+    END_DATE_INCLUSIVE,
+    YAHOO_SPOTCHECK_TARGET_KEYS,
+    YAHOO_SPOTCHECK_TOLERANCE,
+    RESULTS_US_DIR,
+    VALIDATION_DIR,
+)
+
+
+DEFAULT_MONTH = pd.to_datetime(END_DATE_INCLUSIVE, errors="coerce").strftime("%Y-%m")
 
 def canonical_ticker(ticker: Any) -> str:
     return str(ticker or "").strip().upper()
@@ -54,17 +68,7 @@ def indicators_to_canonical_map(indicators: Any) -> Dict[str, Any]:
     return {}
 
 
-TARGET_KEYS = [
-    "Assets",
-    "CashAndEquivalents",
-    "NetRevenue_TTM",
-    "EBIT_TTM",
-    "NetProfit_TTM",
-    "EPS",
-    "P_E",
-    "P_B",
-    "last_price",
-]
+TARGET_KEYS = YAHOO_SPOTCHECK_TARGET_KEYS
 
 
 def _to_float(x: Any) -> Optional[float]:
@@ -304,23 +308,23 @@ def parse_args() -> Args:
     p.add_argument(
         "--pred_dir",
         type=str,
-        default="results/final_report2025_us",
+        default=str(RESULTS_US_DIR),
         help="Prediction directory (agent or workflow outputs).",
     )
     p.add_argument("--mode", type=str, choices=["auto", "workflow", "agent"], default="auto")
-    p.add_argument("--month", type=str, default="2025-04", help="Spot-check month in YYYY-MM format.")
+    p.add_argument("--month", type=str, default=DEFAULT_MONTH, help="Spot-check month in YYYY-MM format.")
     p.add_argument("--tickers", type=str, default=None, help="Optional comma-separated ticker filter.")
-    p.add_argument("--tolerance", type=float, default=0.30, help="Relative error tolerance.")
+    p.add_argument("--tolerance", type=float, default=YAHOO_SPOTCHECK_TOLERANCE, help="Relative error tolerance.")
     p.add_argument(
         "--out_csv",
         type=str,
-        default="results/validation/yahoo_spotcheck_2025-04.csv",
+        default=str(VALIDATION_DIR / f"yahoo_spotcheck_{DEFAULT_MONTH}.csv"),
         help="Output CSV path.",
     )
     p.add_argument(
         "--out_json",
         type=str,
-        default="results/validation/yahoo_spotcheck_2025-04.json",
+        default=str(VALIDATION_DIR / f"yahoo_spotcheck_{DEFAULT_MONTH}.json"),
         help="Output JSON path.",
     )
     a = p.parse_args()

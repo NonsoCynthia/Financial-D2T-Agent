@@ -8,10 +8,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import PROCESSED_DIR
-
-PANEL_DIR = PROCESSED_DIR / "panel"
-SPLITS_DIR = PROCESSED_DIR / "splits"
+from config import PANEL_DB_PATH, US_MONTHLY_PANEL_TABLE, DAILY_PANEL_CSV, MONTHLY_PANEL_CSV
 
 
 def build_monthly_panel(daily_panel_csv: Path) -> pd.DataFrame:
@@ -120,17 +117,17 @@ def save_monthly_to_sqlite(monthly: pd.DataFrame, db_path: Path, table_name: str
 
 
 def main() -> None:
-    daily_csv = PANEL_DIR / "daily_panel_prices_returns_fundamentals.csv"
+    daily_csv = DAILY_PANEL_CSV
     if not daily_csv.exists():
         raise FileNotFoundError(f"Missing daily panel CSV: {daily_csv}")
 
     monthly = build_monthly_panel(daily_panel_csv=daily_csv)
 
-    out_csv = PANEL_DIR / "monthly_panel_prices_returns_fundamentals.csv"
+    out_csv = MONTHLY_PANEL_CSV
     save_monthly_outputs(monthly=monthly, out_csv=out_csv)
 
-    db_path = PANEL_DIR / "panel.db"
-    save_monthly_to_sqlite(monthly=monthly, db_path=db_path, table_name="US_MONTHLY_PANEL")
+    db_path = PANEL_DB_PATH
+    save_monthly_to_sqlite(monthly=monthly, db_path=db_path, table_name=US_MONTHLY_PANEL_TABLE)
 
     print("Done")
 

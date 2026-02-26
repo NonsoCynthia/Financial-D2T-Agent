@@ -52,20 +52,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--write-folder",
-        default="",
+        default="result/debug",
         help="Optional output root folder override.",
     )
     parser.add_argument(
         "--reasoning",
         choices=["low", "medium", "high"],
         default="medium",
-        help="Reasoning effort for the run.",
+        help="Deprecated: analyst reasoning is fixed to medium by policy.",
     )
     parser.add_argument(
         "--verbosity",
         choices=["low", "medium", "high"],
         default="medium",
         help="Verbosity level for the run.",
+    )
+    parser.add_argument(
+        "--allow-unknown-tickers",
+        action="store_true",
+        help="Allow tickers not preconfigured in final_report2025 config (useful for EU/custom symbols).",
     )
     mcp_group = parser.add_mutually_exclusive_group()
     mcp_group.add_argument(
@@ -118,6 +123,7 @@ def main() -> int:
     load_env(project_root=project_root)
 
     from experiments import ExperimentMetadata, Intensity, Model
+    from experiments import StockInput
     import experiments.final_report2025.config as config_mod
     from financial_agents.us_indicator_schema import IndicatorOutput
 
@@ -135,7 +141,7 @@ def main() -> int:
         return 2
 
     missing = [t for t in requested_tickers if t not in configured_by_ticker]
-    if missing:
+    if missing and not args.allow_unknown_tickers:
         available = ", ".join(sorted(configured_by_ticker.keys()))
         print(
             f"Unknown ticker(s): {', '.join(missing)}. Available tickers: {available}",
@@ -143,7 +149,18 @@ def main() -> int:
         )
         return 2
 
-    selected = [configured_by_ticker[t] for t in requested_tickers]
+    selected = []
+    for t in requested_tickers:
+        if t in configured_by_ticker:
+            selected.append(configured_by_ticker[t])
+            continue
+        selected.append(
+            StockInput(
+                name=t,
+                cnpj="N/A",
+                stock_id=t,
+            )
+        )
 
     try:
         model = Model(args.model)
@@ -162,12 +179,15 @@ def main() -> int:
     if not write_folder:
         write_folder = str(project_root / "results" / "final_report2025_us_test_one_ticker")
 
+    if args.reasoning != "medium":
+        print("Ignoring --reasoning value; analyst reasoning is fixed to medium.")
+
     experiment = ExperimentMetadata(
         model=model,
         write_folder=write_folder,
         max_turns=args.max_turns,
         structured_output=IndicatorOutput.model_json_schema(),
-        reasoning=Intensity(args.reasoning),
+        reasoning=Intensity.MEDIUM,
         verbosity=Intensity(args.verbosity),
         reflection=bool(args.reflection),
     )

@@ -9,33 +9,35 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import PROCESSED_DIR, RAW_DIR
+from config import (
+    PRICES_DB_PATH,
+    SEC_DB_PATH,
+    PANEL_DB_PATH as CONFIG_PANEL_DB_PATH,
+    SEC_COMPANYFACTS_DIR,
+    SEC_COMPANYFACTS_CSV,
+    SEC_COMPANYFACTS_CSV_LEGACY,
+    US_RETURNS_TABLE,
+    SEC_COMPANYFACTS_TABLE,
+    US_DAILY_PANEL_TABLE,
+    US_FUNDAMENTALS_WIDE_TABLE,
+    FUNDAMENTAL_CONCEPTS,
+    DAILY_RETURNS_CSV,
+    DAILY_PANEL_CSV,
+    FUNDAMENTALS_WIDE_BY_FILED_CSV,
+)
 
-FACTS_DIR = RAW_DIR / "sec" / "companyfacts"
-RETURNS_DIR = PROCESSED_DIR / "prices"
-OUT_DIR = PROCESSED_DIR / "panel"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+FACTS_DIR = SEC_COMPANYFACTS_DIR
 
-PRICES_DB_PATH = RAW_DIR / "prices_us.db"
-RETURNS_TABLE = "US_RETURNS"
+RETURNS_TABLE = US_RETURNS_TABLE
 
-FACTS_DB_PATH = RAW_DIR / "sec" / "sec_companyfacts.db"
-FACTS_TABLE = "SEC_COMPANYFACTS"
+FACTS_DB_PATH = SEC_DB_PATH
+FACTS_TABLE = SEC_COMPANYFACTS_TABLE
 
-PANEL_DB_PATH = OUT_DIR / "panel.db"
-PANEL_TABLE = "US_DAILY_PANEL"
-WIDE_TABLE = "US_FUNDAMENTALS_WIDE_BY_FILED"
+PANEL_DB_PATH = CONFIG_PANEL_DB_PATH
+PANEL_TABLE = US_DAILY_PANEL_TABLE
+WIDE_TABLE = US_FUNDAMENTALS_WIDE_TABLE
 
-CONCEPTS = [
-    "Assets",
-    "Liabilities",
-    "StockholdersEquity",
-    "Revenues",
-    "NetIncomeLoss",
-    "OperatingIncomeLoss",
-    "EarningsPerShareBasic",
-    "CommonStockSharesOutstanding",
-]
+CONCEPTS = FUNDAMENTAL_CONCEPTS
 
 
 def load_daily_returns() -> pd.DataFrame:
@@ -49,7 +51,7 @@ def load_daily_returns() -> pd.DataFrame:
     Returns a DataFrame with columns:
     date, ticker, adj_close, ret_1d, log_ret_1d, Volume
     """
-    p = RETURNS_DIR / "daily_returns.csv"
+    p = DAILY_RETURNS_CSV
 
     if p.exists():
         df = pd.read_csv(p)
@@ -101,7 +103,9 @@ def load_companyfacts() -> pd.DataFrame:
     Returns a long DataFrame with columns:
     ticker, concept, unit, value, form, fy, fp, end, filed, accn
     """
-    p = FACTS_DIR / "companyfacts_2022_2025.csv"
+    preferred = SEC_COMPANYFACTS_CSV
+    legacy = SEC_COMPANYFACTS_CSV_LEGACY
+    p = preferred if preferred.exists() else legacy
 
     if p.exists():
         df = pd.read_csv(p, dtype={"ticker": str, "concept": str, "unit": str}, low_memory=False)
@@ -263,15 +267,17 @@ def save_outputs(panel: pd.DataFrame, wide_facts: pd.DataFrame) -> None:
     """
     Save the daily panel dataset and the wide fundamentals table to CSV and Parquet.
     """
-    panel_csv = OUT_DIR / "daily_panel_prices_returns_fundamentals.csv"
+    panel_csv = DAILY_PANEL_CSV
+    panel_csv.parent.mkdir(parents=True, exist_ok=True)
     panel.to_csv(panel_csv, index=False)
 
-    facts_csv = OUT_DIR / "fundamentals_wide_by_filed.csv"
+    facts_csv = FUNDAMENTALS_WIDE_BY_FILED_CSV
+    facts_csv.parent.mkdir(parents=True, exist_ok=True)
     wide_facts.to_csv(facts_csv, index=False)
 
     try:
-        panel.to_parquet(OUT_DIR / "daily_panel_prices_returns_fundamentals.parquet", index=False)
-        wide_facts.to_parquet(OUT_DIR / "fundamentals_wide_by_filed.parquet", index=False)
+        panel.to_parquet(panel_csv.with_suffix(".parquet"), index=False)
+        wide_facts.to_parquet(facts_csv.with_suffix(".parquet"), index=False)
     except Exception as e:
         print(f"Parquet not written. {e}")
 

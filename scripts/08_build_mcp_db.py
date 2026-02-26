@@ -5,7 +5,7 @@ Create consolidated fundamental_analysis.db for Thiago-style openai-agent experi
 Inputs:
 - data/raw/prices_us.db (US_PRICES, optionally US_RETURNS)
 - data/raw/sec/sec_companyfacts.db (SEC_COMPANYFACTS optional)
-- data/raw/sec/companyfacts/companyfacts_2022_2025.csv or *_companyfacts.csv (fallback for SEC)
+- data/raw/sec/companyfacts/companyfacts_2022_<END_YEAR>.csv or *_companyfacts.csv (fallback for SEC)
 - data/processed/panel/panel.db (US_DAILY_PANEL, US_MONTHLY_PANEL, US_FUNDAMENTALS_WIDE_BY_FILED)
 
 Output:
@@ -20,20 +20,27 @@ from pathlib import Path
 
 import pandas as pd
 
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
-PRICES_DB = PROJECT_ROOT / "data" / "raw" / "prices_us.db"
-SEC_DB = PROJECT_ROOT / "data" / "raw" / "sec" / "sec_companyfacts.db"
-PANEL_DB = PROJECT_ROOT / "data" / "processed" / "panel" / "panel.db"
+from config import (
+    PRICES_DB_PATH as PRICES_DB,
+    SEC_DB_PATH as SEC_DB,
+    PANEL_DB_PATH as PANEL_DB,
+    SEC_COMPANYFACTS_DIR,
+    SEC_COMPANYFACTS_CSV,
+    MCP_DB_PATH as OUT_DB,
+    SEC_COMPANYFACTS_TABLE,
+    US_PRICES_TABLE,
+    US_RETURNS_TABLE,
+    SQLITE_COPY_CHUNKSIZE,
+)
 
-SEC_COMPANYFACTS_DIR = PROJECT_ROOT / "data" / "raw" / "sec" / "companyfacts"
-SEC_COMPANYFACTS_CSV = SEC_COMPANYFACTS_DIR / "companyfacts_2022_2025.csv"
+OUT_DIR = OUT_DB.parent
 
-OUT_DIR = PROJECT_ROOT / "data" / "processed" / "mcp"
-OUT_DB = OUT_DIR / "fundamental_analysis.db"
-
-CHUNKSIZE = 200_000
+CHUNKSIZE = SQLITE_COPY_CHUNKSIZE
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
@@ -128,8 +135,8 @@ def copy_sec_companyfacts(dst_con: sqlite3.Connection) -> None:
     """
     sec_tables = set(list_tables(db_path=SEC_DB)) if SEC_DB.exists() else set()
 
-    if "SEC_COMPANYFACTS" in sec_tables:
-        copy_table_from_db(src_path=SEC_DB, table="SEC_COMPANYFACTS", dst_con=dst_con)
+    if SEC_COMPANYFACTS_TABLE in sec_tables:
+        copy_table_from_db(src_path=SEC_DB, table=SEC_COMPANYFACTS_TABLE, dst_con=dst_con)
         return
 
     print(
@@ -146,8 +153,8 @@ def copy_sec_companyfacts(dst_con: sqlite3.Connection) -> None:
         facts_df = pd.concat((pd.read_csv(p, low_memory=False) for p in csv_files), ignore_index=True)
 
     facts_df = normalise_sec_companyfacts(df=facts_df)
-    facts_df.to_sql("SEC_COMPANYFACTS", dst_con, if_exists="replace", index=False)
-    print(f"  inserted {len(facts_df)} rows into SEC_COMPANYFACTS")
+    facts_df.to_sql(SEC_COMPANYFACTS_TABLE, dst_con, if_exists="replace", index=False)
+    print(f"  inserted {len(facts_df)} rows into {SEC_COMPANYFACTS_TABLE}")
 
 
 def create_indexes(dst_con: sqlite3.Connection) -> None:
@@ -156,10 +163,18 @@ def create_indexes(dst_con: sqlite3.Connection) -> None:
     """
     # Avoid temp-file writes during index builds in restricted environments.
     dst_con.execute("PRAGMA temp_store=MEMORY")
-    dst_con.execute("CREATE INDEX IF NOT EXISTS idx_sec_ticker_concept_end ON SEC_COMPANYFACTS (TICKER, CONCEPT, END_DATE)")
-    dst_con.execute("CREATE INDEX IF NOT EXISTS idx_sec_ticker_end ON SEC_COMPANYFACTS (TICKER, END_DATE)")
-    dst_con.execute("CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON US_PRICES (TICKER, TRADE_DATE)")
-    dst_con.execute("CREATE INDEX IF NOT EXISTS idx_returns_ticker_date ON US_RETURNS (TICKER, TRADE_DATE)")
+    dst_con.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_sec_ticker_concept_end ON {SEC_COMPANYFACTS_TABLE} (TICKER, CONCEPT, END_DATE)"
+    )
+    dst_con.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_sec_ticker_end ON {SEC_COMPANYFACTS_TABLE} (TICKER, END_DATE)"
+    )
+    dst_con.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON {US_PRICES_TABLE} (TICKER, TRADE_DATE)"
+    )
+    dst_con.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_returns_ticker_date ON {US_RETURNS_TABLE} (TICKER, TRADE_DATE)"
+    )
 
 
 def main() -> None:
@@ -179,12 +194,12 @@ def main() -> None:
     dst_con = sqlite3.connect(str(OUT_DB))
     try:
         copy_sec_companyfacts(dst_con=dst_con)
-        copy_table_from_db(src_path=PRICES_DB, table="US_PRICES", dst_con=dst_con)
+        copy_table_from_db(src_path=PRICES_DB, table=US_PRICES_TABLE, dst_con=dst_con)
 
         try:
-            copy_table_from_db(src_path=PRICES_DB, table="US_RETURNS", dst_con=dst_con)
+            copy_table_from_db(src_path=PRICES_DB, table=US_RETURNS_TABLE, dst_con=dst_con)
         except Exception:
-            print("US_RETURNS not found, skipping")
+            print(f"{US_RETURNS_TABLE} not found, skipping")
 
         # Commit copied rows first, then build indexes.
         dst_con.commit()

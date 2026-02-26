@@ -1,0 +1,32 @@
+{
+  "capture_dates": [
+    "2026-02-25"
+  ],
+  "capture_dates_unique_count": 1,
+  "date_definition": "date is capture snapshot date (downloaded_at_utc[:10])",
+  "date_max": "2026-02-25",
+  "date_min": "2026-02-25",
+  "dates_per_ticker": {
+    "AAPL": 1,
+    "AMZN": 1,
+    "COIN": 1,
+    "GOOG": 1,
+    "MSFT": 1,
+    "NFLX": 1,
+    "NIO": 1,
+    "TSLA": 1
+  },
+  "input_dir": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data/roic_json_dumps_monthly_last_year",
+  "json_files_scanned": 8,
+  "latest_capture_date": "2026-02-25",
+  "out_csv_written": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data/processed/benchmarks/roic_gold_benchmark_2026-02-25.csv",
+  "rows_new_batch": 163,
+  "rows_written": 163,
+  "series_constant_count": 163,
+  "series_constant_ratio": 1.0,
+  "series_count": 163,
+  "source_name": "roic.ai",
+  "unique_dates": 1,
+  "unique_tickers": 8,
+  "warning_labelled_not_historical": false
+}

@@ -7,9 +7,9 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import PROCESSED_DIR, TRAIN_END, TEST_START, TEST_END
+from config import PROCESSED_DIR, TRAIN_END, TEST_START, TEST_END, SPLIT_FEATURE_COLS, DAILY_PANEL_CSV
+from config import TRAIN_SPLIT_ALIAS, TEST_SPLIT_ALIAS
 
-PANEL_DIR = PROCESSED_DIR / "panel"
 OUT_DIR = PROCESSED_DIR / "splits"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -18,7 +18,7 @@ def load_panel() -> pd.DataFrame:
     """
     Load the daily panel dataset produced in Step 04b.
     """
-    p = PANEL_DIR / "daily_panel_prices_returns_fundamentals.csv"
+    p = DAILY_PANEL_CSV
     df = pd.read_csv(p)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
@@ -109,22 +109,7 @@ def main() -> None:
 
     train, test = split_by_date(df=df)
 
-    feature_cols = [
-        "ret_1d",
-        "ret_5d",
-        "ret_20d",
-        "vol_20d",
-        "vol_60d",
-        "Volume",
-        "Assets",
-        "Liabilities",
-        "StockholdersEquity",
-        "Revenues",
-        "NetIncomeLoss",
-        "OperatingIncomeLoss",
-        "EarningsPerShareBasic",
-        "CommonStockSharesOutstanding",
-    ]
+    feature_cols = list(SPLIT_FEATURE_COLS)
 
     for c in feature_cols:
         if c not in train.columns:
@@ -136,8 +121,16 @@ def main() -> None:
     train = train.dropna(subset=["target_ret_1d"])
     test = test.dropna(subset=["target_ret_1d"])
 
-    save_split(df=train, name="train_2022_2024")
-    save_split(df=test, name="test_2025")
+    train_name = f"train_through_{TRAIN_END}"
+    test_name = f"test_{TEST_START}_to_{TEST_END}"
+    save_split(df=train, name=train_name)
+    save_split(df=test, name=test_name)
+
+    # Backward-compatible aliases used by earlier runs/scripts.
+    if train_name != TRAIN_SPLIT_ALIAS:
+        save_split(df=train, name=TRAIN_SPLIT_ALIAS)
+    if test_name != TEST_SPLIT_ALIAS:
+        save_split(df=test, name=TEST_SPLIT_ALIAS)
 
     meta = {
         "train_end": TRAIN_END,
@@ -158,5 +151,5 @@ if __name__ == "__main__":
     main()
 
 # Splits (extra step)
-# - data/processed/splits/train_2022_2024.csv
-# - data/processed/splits/test_2025.csv
+# - data/processed/splits/train_through_<TRAIN_END>.csv
+# - data/processed/splits/test_<TEST_START>_to_<TEST_END>.csv

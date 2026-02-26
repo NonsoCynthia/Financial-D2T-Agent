@@ -1,76 +1,55 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
 
-from eu_config import ROIC_SOURCE_NAME_DEFAULT
-from eu_paths import (
-    LEGACY_FUNDAMENTALS_DIR,
-    LEGACY_MONTHLY_RETURNS_DIR,
-    LEGACY_PRICES_DIR,
-    LEGACY_REPORTS_DIR,
-    PROCESSED_BENCHMARKS_DIRS,
-    PROCESSED_MCP_DIRS,
-    PROCESSED_MONTHLY_RETURNS_DIRS,
-    PROCESSED_PANEL_DIRS,
-    PROCESSED_PRICES_DIRS,
-    RAW_FUNDAMENTALS_DIRS,
-    RAW_PRICES_DIRS,
-    RAW_REPORTS_DIRS,
-    RAW_SEC_COMPANYFACTS_DIRS,
-    RAW_SEC_DIRS,
-    ROIC_DUMPS_DIR_DEFAULT,
-    ROIC_GOLD_BENCHMARK_CSV,
-    ROIC_GOLD_BENCHMARK_REPORT_JSON,
-    ensure_dirs,
-)
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
-STEP_ORDER = [
-    "prices",
-    "returns",
-    "fundamentals",
-    "reports",
-    "panel",
-    "databases",
-    "roic_gold_benchmark",
-]
+from config import (
+    ROIC_GOLD_BENCHMARK_CSV,
+    ROIC_GOLD_BENCHMARK_REPORT_JSON,
+    ROIC_DUMPS_DIR_DEFAULT,
+    ROIC_SOURCE_NAME_DEFAULT,
+    SCRIPT_PIPELINE_STEP_ORDER,
+)
+
+# Keep these in execution order for --all.
+STEP_ORDER = list(SCRIPT_PIPELINE_STEP_ORDER)
 
 STEP_SCRIPTS = {
-    "prices": SCRIPT_DIR / "01_download_prices_eu.py",
-    "returns": SCRIPT_DIR / "02_compute_returns_eu.py",
-    "fundamentals": SCRIPT_DIR / "03_download_fundamentals_eu.py",
-    "reports": SCRIPT_DIR / "03b_download_reports_eu.py",
-    "panel": SCRIPT_DIR / "04_make_monthly_panel_eu.py",
-    "databases": SCRIPT_DIR / "05_build_eu_databases.py",
-    "roic_gold_benchmark": SCRIPT_DIR / "06_build_roic_gold_benchmark_eu.py",
-    "roic_dump_download": SCRIPT_DIR / "07_download_roic_snapshots_eu.py",
+    # "download_prices": SCRIPT_DIR / "01_download_prices.py",
+    # "sec_map": SCRIPT_DIR / "02_sec_ticker_cik.py",
+    # "sec_companyfacts": SCRIPT_DIR / "03a_sec_companyfacts.py",
+    # "sec_filings": SCRIPT_DIR / "03b_sec_download_filings.py",
+    # "compute_returns": SCRIPT_DIR / "04a_compute_returns.py",
+    # "align_fundamentals": SCRIPT_DIR / "04b_align_fundamentals.py",
+    # "make_splits": SCRIPT_DIR / "05_make_splits.py",
+    # "monthly_panel": SCRIPT_DIR / "06_make_monthly_panel.py",
+    # "yahoo_spotcheck": SCRIPT_DIR / "07_yahoo_gold_spotcheck.py",
+    # "fundamental_db": SCRIPT_DIR / "08_build_mcp_db.py",
+    "roic_gold_benchmark": SCRIPT_DIR / "09_build_roic_gold_benchmark.py",
+    "roic_dump_download": SCRIPT_DIR / "10_download_roic_snapshots.py",
 }
 
 
-ROIC_DUMP_FILE_RE = re.compile(r"^roic_[A-Za-z0-9.\-]+_asof_\d{4}-\d{2}-\d{2}\.json$")
-
-
-def _has_roic_json_dumps(path: Path) -> bool:
-    if not path.exists() or not path.is_dir():
-        return False
-    for p in path.glob("*.json"):
-        if ROIC_DUMP_FILE_RE.match(p.name):
-            return True
-    return False
-
-
 def _resolve_roic_input_dir(requested: Path) -> Path | None:
-    if _has_roic_json_dumps(path=requested):
+    """
+    Resolve a usable ROIC dumps directory.
+
+    Search order:
+    1) requested path
+    2) siblings like roic_*_json_dumps in requested parent
+    3) data/ and data/processed/benchmarks fallback roots
+    """
+    if requested.exists() and requested.is_dir():
         return requested
 
-    roots = [requested.parent, PROJECT_ROOT / "data_eu", PROJECT_ROOT / "data_eu" / "processed" / "benchmarks"]
+    roots = [requested.parent, PROJECT_ROOT / "data", PROJECT_ROOT / "data" / "processed" / "benchmarks"]
     seen: set[Path] = set()
     for root in roots:
         if root in seen:
@@ -78,15 +57,9 @@ def _resolve_roic_input_dir(requested: Path) -> Path | None:
         seen.add(root)
         if not root.exists() or not root.is_dir():
             continue
-        # Prefer known ROIC dump dir naming patterns first.
-        candidates = sorted(
-            p
-            for p in root.glob("*")
-            if p.is_dir() and (p.name.startswith("roic_") or p.name == "roic_json_dumps_monthly_last_year")
-        )
-        for c in candidates:
-            if _has_roic_json_dumps(path=c):
-                return c
+        candidates = sorted(p for p in root.glob("roic_*_json_dumps") if p.is_dir())
+        if candidates:
+            return candidates[-1]
     return None
 
 
@@ -127,13 +100,13 @@ def run_step(step: str, args: argparse.Namespace, from_all: bool = False) -> int
                 if code == 0:
                     resolved_in_dir = _resolve_roic_input_dir(requested=Path(args.roic_in_dir))
             msg = (
-                f"ROIC input directory missing or empty: {args.roic_in_dir}. "
+                f"ROIC input directory not found: {args.roic_in_dir}. "
                 "Skipping roic_gold_benchmark in --all."
             )
             if resolved_in_dir is None and from_all:
                 print(msg)
                 print(
-                    "To run this step, pass --roic-in-dir <dir> after creating/downloading "
+                    "To run this step, pass --roic-in-dir <dir> after creating/download "
                     "ROIC JSON dumps."
                 )
                 return 0
@@ -205,45 +178,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
+def main() -> None:
     args = parse_args()
-
-    ensure_dirs(
-        paths=[
-            *RAW_PRICES_DIRS,
-            *RAW_FUNDAMENTALS_DIRS,
-            *RAW_REPORTS_DIRS,
-            *RAW_SEC_DIRS,
-            *RAW_SEC_COMPANYFACTS_DIRS,
-            *PROCESSED_PRICES_DIRS,
-            *PROCESSED_MONTHLY_RETURNS_DIRS,
-            *PROCESSED_PANEL_DIRS,
-            *PROCESSED_MCP_DIRS,
-            *PROCESSED_BENCHMARKS_DIRS,
-            ROIC_DUMPS_DIR_DEFAULT,
-            LEGACY_PRICES_DIR,
-            LEGACY_FUNDAMENTALS_DIR,
-            LEGACY_REPORTS_DIR,
-            LEGACY_MONTHLY_RETURNS_DIR,
-        ]
-    )
 
     if args.all:
         for step in STEP_ORDER:
             code = run_step(step=step, args=args, from_all=True)
             if code != 0:
-                return code
-        return 0
+                sys.exit(code)
+        return
 
     if args.step:
-        return run_step(step=args.step, args=args, from_all=False)
+        sys.exit(run_step(step=args.step, args=args, from_all=False))
 
     print(f"Available steps: {', '.join(STEP_ORDER)}")
-    print("Tip: python scripts_eu/run_eu_pipeline.py --step roic_gold_benchmark")
-    return 0
+    print("Tip: python scripts/run_scripts.py --step roic_gold_benchmark")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
 
-# python scripts_eu/run_eu_pipeline.py --all
+# python scripts/run_scripts.py --all

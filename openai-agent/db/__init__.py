@@ -1,6 +1,7 @@
 """ US helper functions for date selection and price lookup (used by experiments)."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,9 @@ def project_root() -> Path:
 
 
 def default_db_path() -> str:
+    env = os.getenv("US_DB_PATH")
+    if env:
+        return env
     return str(project_root() / "data" / "processed" / "mcp" / "fundamental_analysis.db")
 
 

@@ -1,0 +1,30 @@
+{
+  "capture_dates": [
+    "2026-02-26"
+  ],
+  "capture_dates_unique_count": 1,
+  "date_definition": "date is capture snapshot date (downloaded_at_utc[:10])",
+  "date_max": "2026-02-26",
+  "date_min": "2026-02-26",
+  "dates_per_ticker": {
+    "A5G.IR": 1,
+    "ASML.AS": 1,
+    "BIRG.IR": 1,
+    "NOVO-B.CO": 1,
+    "SAP.DE": 1,
+    "SIE.DE": 1
+  },
+  "input_dir": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data_eu/roic_json_dumps_monthly_last_year",
+  "json_files_scanned": 10,
+  "latest_capture_date": "2026-02-26",
+  "out_csv_written": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data_eu/processed/benchmarks/roic_gold_benchmark_2026-02-26.csv",
+  "rows_new_batch": 115,
+  "rows_written": 115,
+  "series_constant_count": 115,
+  "series_constant_ratio": 1.0,
+  "series_count": 115,
+  "source_name": "roic.ai",
+  "unique_dates": 1,
+  "unique_tickers": 6,
+  "warning_labelled_not_historical": false
+}

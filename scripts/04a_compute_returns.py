@@ -8,15 +8,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import PRICES_RAW_DIR, PROCESSED_DIR, RAW_DIR
+from config import PRICES_DB_PATH, US_PRICES_TABLE, US_RETURNS_TABLE, ALL_PRICES_LONG_CSV, DAILY_RETURNS_CSV
 
-OUT_DIR = PROCESSED_DIR / "prices"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-PRICES_DB_PATH = RAW_DIR / "prices_us.db"
-PRICES_TABLE = "US_PRICES"
-
-RETURNS_TABLE = "US_RETURNS"
+PRICES_TABLE = US_PRICES_TABLE
+RETURNS_TABLE = US_RETURNS_TABLE
 
 
 def load_prices_long(csv_path: Path, db_path: Path) -> pd.DataFrame:
@@ -88,7 +83,7 @@ def add_returns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def save_outputs(df: pd.DataFrame, out_dir: Path) -> Path:
+def save_outputs(df: pd.DataFrame, out_csv: Path) -> Path:
     """
     Save returns to CSV (and Parquet if available).
 
@@ -99,11 +94,12 @@ def save_outputs(df: pd.DataFrame, out_dir: Path) -> Path:
     out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.strftime("%Y-%m-%d")
     out = out.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    csv_path = out_dir / "daily_returns.csv"
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    csv_path = out_csv
     out.to_csv(csv_path, index=False)
 
     try:
-        pq_path = out_dir / "daily_returns.parquet"
+        pq_path = out_csv.with_suffix(".parquet")
         out.to_parquet(pq_path, index=False)
     except Exception as e:
         print(f"Parquet not written. {e}")
@@ -200,12 +196,12 @@ def main() -> None:
     - Saves CSV and Parquet outputs
     - Writes returns into SQLite
     """
-    prices_csv = PRICES_RAW_DIR / "all_prices_long.csv"
+    prices_csv = ALL_PRICES_LONG_CSV
     df = load_prices_long(csv_path=prices_csv, db_path=PRICES_DB_PATH)
 
     df = add_returns(df=df)
 
-    save_outputs(df=df, out_dir=OUT_DIR)
+    save_outputs(df=df, out_csv=DAILY_RETURNS_CSV)
 
     create_returns_table(db_path=PRICES_DB_PATH)
     insert_returns_sqlite(db_path=PRICES_DB_PATH, df=df)

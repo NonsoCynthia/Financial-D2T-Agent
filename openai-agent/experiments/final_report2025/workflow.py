@@ -4,8 +4,10 @@ import os
 import time
 
 from agents import Agent, ModelSettings, Runner, RunResult
+from agents.exceptions import MaxTurnsExceeded
 from experiments import ExperimentMetadata, Intensity
 from experiments.final_report2025.config import STOCKS, DB_PATH, ANALYSIS_DATES
+from experiments.final_report2025.scoring import output_metrics_for_prediction
 from experiments.utils import get_result, save_results
 from openai.types.shared import Reasoning
 
@@ -47,11 +49,22 @@ Return your response in the required schema with:
 """
 
 
+def _inter_run_sleep_seconds() -> float:
+    raw = os.getenv("INTER_RUN_SLEEP_SECONDS", "10")
+    try:
+        value = float(raw)
+    except ValueError:
+        return 10.0
+    return max(0.0, value)
+
+
+INTER_RUN_SLEEP_SECONDS = _inter_run_sleep_seconds()
+
+
 def init_agent(experiment_metadata: ExperimentMetadata) -> Agent:
-    model_settings = ModelSettings(tool_choice="required")
-    if experiment_metadata.reasoning is not None:
-        reasoning = Reasoning(effort=experiment_metadata.reasoning)
-        model_settings = ModelSettings(reasoning=reasoning, verbosity=experiment_metadata.verbosity)
+    # Enforce analyst reasoning policy: always medium.
+    analyst_reasoning = Reasoning(effort=Intensity.MEDIUM)
+    model_settings = ModelSettings(reasoning=analyst_reasoning, verbosity=experiment_metadata.verbosity)
 
     return get_agent(
         name="financial_analyst",
@@ -151,6 +164,42 @@ def _save_json(path: str, payload: dict) -> None:
         json.dump(payload, f, indent=4)
 
 
+def _usage_metrics_from_payload(payload: dict | None) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return {
+        "requests": int(usage.get("requests", 0) or 0),
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "total_tokens": int(usage.get("total_tokens", 0) or 0),
+    }
+
+
+def _paper_metrics_for_output(
+    ticker: str,
+    analysis_date: str,
+    indicators: dict[str, float],
+    usage_metrics: dict | None = None,
+) -> dict | None:
+    try:
+        metrics = output_metrics_for_prediction(
+            ticker=ticker,
+            analysis_date=analysis_date,
+            y_pred=indicators,
+        )
+        if not isinstance(metrics, dict):
+            return None
+        if isinstance(usage_metrics, dict):
+            metrics.update(usage_metrics)
+        return metrics
+    except Exception as exc:
+        print(f"Skipping paper metrics for {ticker} on {analysis_date}: {exc}")
+        return None
+
+
 def analyse(
     agent: Agent,
     name: str,
@@ -178,13 +227,33 @@ def analyse(
         previous_report=previous_report,
         feedback=feedback,
     )
-    return asyncio.run(
-        Runner.run(
-            agent=agent,
-            input=inp_data,
-            max_turns=experiment_metadata.max_turns,
-        )
+    return _run_with_turn_retry(
+        agent=agent,
+        inp_data=inp_data,
+        max_turns=experiment_metadata.max_turns,
+        label="analyst",
     )
+
+
+def _run_with_turn_retry(agent: Agent, inp_data: str, max_turns: int, label: str) -> RunResult:
+    try:
+        return asyncio.run(
+            Runner.run(
+                starting_agent=agent,
+                input=inp_data,
+                max_turns=max_turns,
+            )
+        )
+    except MaxTurnsExceeded:
+        retry_turns = max(30, max_turns * 2)
+        print(f"{label}: max turns exceeded at {max_turns}. Retrying with {retry_turns}.")
+        return asyncio.run(
+            Runner.run(
+                starting_agent=agent,
+                input=inp_data,
+                max_turns=retry_turns,
+            )
+        )
 
 
 def guardrail_reflection(
@@ -310,17 +379,24 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
 
                 existing_analyst_output = _load_json(path=analyst_output_file)
                 existing_manager_payload = _load_json(path=manager_file)
+                existing_metrics = (
+                    existing_analyst_output.get("paper_metrics")
+                    if isinstance(existing_analyst_output, dict)
+                    else None
+                )
                 if (
                     os.path.exists(analyst_file)
                     and existing_analyst_output is not None
                     and isinstance(existing_analyst_output.get("manager"), dict)
                     and existing_manager_payload is not None
                     and os.path.exists(manager_decision_file)
+                    and isinstance(existing_metrics, dict)
                 ):
                     continue
 
                 indicators_payload = existing_analyst_output
                 indicators_map: dict[str, float] = {}
+                analyst_payload_for_usage: dict | None = None
 
                 if indicators_payload is None:
                     start = time.time()
@@ -370,8 +446,10 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     indicators_payload = result.final_output.model_dump()
                     indicators_payload["analysis_date"] = analysis_date
                     indicators_map = _to_map(result=result)
+                    analyst_payload_for_usage = _load_json(path=analyst_file)
                 else:
                     indicators_map = _to_map_from_payload(payload=indicators_payload)
+                    analyst_payload_for_usage = _load_json(path=analyst_file)
 
                 if not indicators_map:
                     print(
@@ -379,6 +457,16 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                         "no analyst indicators found."
                     )
                     continue
+
+                usage_metrics = _usage_metrics_from_payload(payload=analyst_payload_for_usage)
+                paper_metrics = _paper_metrics_for_output(
+                    ticker=stock_id,
+                    analysis_date=analysis_date,
+                    indicators=indicators_map,
+                    usage_metrics=usage_metrics,
+                )
+                if isinstance(indicators_payload, dict) and isinstance(paper_metrics, dict):
+                    indicators_payload["paper_metrics"] = paper_metrics
 
                 manager_payload = existing_manager_payload
                 if manager_payload is None:
@@ -391,12 +479,11 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                         indicators=indicators_map,
                     )
                     manager_start = time.time()
-                    manager_result = asyncio.run(
-                        Runner.run(
-                            agent=manager_agent,
-                            input=manager_prompt,
-                            max_turns=experiment_metadata.max_turns,
-                        )
+                    manager_result = _run_with_turn_retry(
+                        agent=manager_agent,
+                        inp_data=manager_prompt,
+                        max_turns=experiment_metadata.max_turns,
+                        label="manager",
                     )
                     manager_end = time.time()
                     manager_payload = get_result(
@@ -422,11 +509,22 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                 merged_output = dict(indicators_payload)
                 merged_output["analysis_date"] = analysis_date
                 merged_output["manager"] = manager_output
+                if isinstance(paper_metrics, dict):
+                    merged_output["paper_metrics"] = paper_metrics
                 _save_json(path=analyst_output_file, payload=merged_output)
 
                 analyst_payload = _load_json(path=analyst_file)
                 if isinstance(analyst_payload, dict):
                     analyst_payload["analysis_date"] = analysis_date
                     analyst_payload["manager"] = manager_payload
+                    if isinstance(paper_metrics, dict):
+                        analyst_payload["paper_metrics"] = paper_metrics
+                        output_payload = analyst_payload.get("output")
+                        if isinstance(output_payload, dict):
+                            output_payload = dict(output_payload)
+                            output_payload["analysis_date"] = analysis_date
+                            output_payload["paper_metrics"] = paper_metrics
+                            analyst_payload["output"] = output_payload
                     _save_json(path=analyst_file, payload=analyst_payload)
-                time.sleep(10)
+                if INTER_RUN_SLEEP_SECONDS > 0:
+                    time.sleep(INTER_RUN_SLEEP_SECONDS)

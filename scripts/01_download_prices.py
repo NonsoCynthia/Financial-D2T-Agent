@@ -15,14 +15,15 @@ from config import (
     END_DATE_EXCLUSIVE,
     END_DATE_INCLUSIVE,
     PRICES_RAW_DIR,
-    RAW_DIR,
-    SEC_MAP_DIR,
+    PRICES_DB_PATH,
+    US_PRICES_TABLE,
+    REQUIRED_PRICE_COLS,
+    SEC_TICKER_MAP_CSV_SELECTED,
+    ALL_PRICES_LONG_CSV,
 )
 
-REQUIRED_COLS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
-
-PRICES_DB_PATH = RAW_DIR / "prices_us.db"
-PRICES_TABLE = "US_PRICES"
+REQUIRED_COLS = REQUIRED_PRICE_COLS
+PRICES_TABLE = US_PRICES_TABLE
 
 
 def download_bundle(tickers: list[str], start: str, end_exclusive: str) -> pd.DataFrame:
@@ -54,7 +55,7 @@ def load_sec_map_if_available() -> pd.DataFrame:
     This is optional so the prices step can run before the SEC map step.
     If the file does not exist, return an empty DataFrame with expected columns.
     """
-    p = SEC_MAP_DIR / "sec_ticker_cik_selected.csv"
+    p = SEC_TICKER_MAP_CSV_SELECTED
     if not p.exists():
         return pd.DataFrame(columns=["ticker", "cik10", "title"])
 
@@ -126,7 +127,7 @@ def save_csv_and_parquet(df_long: pd.DataFrame) -> None:
 
     Keeps the same filenames you already use so downstream scripts do not break.
     """
-    all_long_csv = PRICES_RAW_DIR / "all_prices_long.csv"
+    all_long_csv = ALL_PRICES_LONG_CSV
     df_long.to_csv(all_long_csv, index=False)
 
     wide_adj = df_long.pivot(index="date", columns="ticker", values="Adj Close")

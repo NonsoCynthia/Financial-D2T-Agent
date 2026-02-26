@@ -8,22 +8,33 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import TICKERS, SEC_TICKER_MAP_URL, SEC_HEADERS_BASE, SEC_MAP_DIR
+from config import (
+    TICKERS,
+    SEC_TICKER_MAP_URL,
+    SEC_HEADERS_BASE,
+    SEC_TICKER_MAP_CSV_ALL,
+    SEC_TICKER_MAP_CSV_SELECTED,
+    SEC_MAP_FETCH_RETRIES,
+    SEC_MAP_TIMEOUT_SECONDS,
+    SEC_RETRY_INITIAL_SLEEP_SECONDS,
+    SEC_MAP_RETRY_STEP_SECONDS,
+    SEC_MAP_RETRY_STATUSES,
+)
 
 
-def fetch_json(session: requests.Session, url: str, headers: dict, retries: int = 5) -> dict:
+def fetch_json(session: requests.Session, url: str, headers: dict, retries: int = SEC_MAP_FETCH_RETRIES) -> dict:
     last_err = None
     for i in range(retries):
         try:
-            r = session.get(url, headers=headers, timeout=30)
-            if r.status_code in (429, 503):
-                time.sleep(0.5 + i * 0.5)
+            r = session.get(url, headers=headers, timeout=SEC_MAP_TIMEOUT_SECONDS)
+            if r.status_code in SEC_MAP_RETRY_STATUSES:
+                time.sleep(SEC_RETRY_INITIAL_SLEEP_SECONDS + i * SEC_MAP_RETRY_STEP_SECONDS)
                 continue
             r.raise_for_status()
             return r.json()
         except Exception as e:
             last_err = e
-            time.sleep(0.5 + i * 0.5)
+            time.sleep(SEC_RETRY_INITIAL_SLEEP_SECONDS + i * SEC_MAP_RETRY_STEP_SECONDS)
     raise RuntimeError(f"Failed to fetch {url}. Last error: {last_err}")
 
 
@@ -49,7 +60,7 @@ def filter_to_tickers(df: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
 
 
 def main() -> None:
-    SEC_MAP_DIR.mkdir(parents=True, exist_ok=True)
+    SEC_TICKER_MAP_CSV_ALL.parent.mkdir(parents=True, exist_ok=True)
 
     with requests.Session() as session:
         raw = fetch_json(session=session, url=SEC_TICKER_MAP_URL, headers=SEC_HEADERS_BASE)
@@ -57,8 +68,8 @@ def main() -> None:
     df_all = build_ticker_cik_df(raw=raw)
     df_sel = filter_to_tickers(df=df_all, tickers=TICKERS)
 
-    out_all = SEC_MAP_DIR / "sec_ticker_cik_all.csv"
-    out_sel = SEC_MAP_DIR / "sec_ticker_cik_selected.csv"
+    out_all = SEC_TICKER_MAP_CSV_ALL
+    out_sel = SEC_TICKER_MAP_CSV_SELECTED
 
     df_all.to_csv(out_all, index=False)
     df_sel.to_csv(out_sel, index=False)

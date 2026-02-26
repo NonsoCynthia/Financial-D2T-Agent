@@ -9,12 +9,26 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from config import SEC_HEADERS_BASE, SEC_MAP_DIR, RAW_DIR
+from config import (
+    SEC_HEADERS_BASE,
+    SEC_FILED_START,
+    SEC_FILED_END,
+    SEC_FILINGS_OUT_DIR,
+    SEC_TICKER_MAP_CSV_SELECTED,
+    SEC_FILINGS_FORMS,
+    SEC_FILINGS_FETCH_RETRIES,
+    SEC_FILINGS_JSON_TIMEOUT_SECONDS,
+    SEC_FILINGS_DOWNLOAD_TIMEOUT_SECONDS,
+    SEC_RETRY_INITIAL_SLEEP_SECONDS,
+    SEC_FILINGS_RETRY_STEP_SECONDS,
+    SEC_FILINGS_INTER_REQUEST_SLEEP_SECONDS,
+    SEC_FILINGS_RETRY_STATUSES,
+)
 
-START_FILED = date(2022, 1, 1)
-END_FILED = date(2025, 12, 31)
+START_FILED = date.fromisoformat(SEC_FILED_START)
+END_FILED = date.fromisoformat(SEC_FILED_END)
 
-OUT_DIR = RAW_DIR / "sec" / "filings_raw"
+OUT_DIR = SEC_FILINGS_OUT_DIR
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -26,13 +40,14 @@ def parse_ymd(s: str) -> date | None:
         return None
 
 
-def fetch_json(session: requests.Session, url: str, headers: dict, retries: int = 6) -> dict | None:
+def fetch_json(session: requests.Session, url: str, headers: dict, retries: int | None = None) -> dict | None:
+    retries = SEC_FILINGS_FETCH_RETRIES if retries is None else retries
     last = None
     for i in range(retries):
         try:
-            r = session.get(url, headers=headers, timeout=40)
-            if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(0.5 + i * 0.7)
+            r = session.get(url, headers=headers, timeout=SEC_FILINGS_JSON_TIMEOUT_SECONDS)
+            if r.status_code in SEC_FILINGS_RETRY_STATUSES:
+                time.sleep(SEC_RETRY_INITIAL_SLEEP_SECONDS + i * SEC_FILINGS_RETRY_STEP_SECONDS)
                 continue
             if r.status_code == 404:
                 return None
@@ -40,12 +55,12 @@ def fetch_json(session: requests.Session, url: str, headers: dict, retries: int 
             return r.json()
         except Exception as e:
             last = e
-            time.sleep(0.5 + i * 0.7)
+            time.sleep(SEC_RETRY_INITIAL_SLEEP_SECONDS + i * SEC_FILINGS_RETRY_STEP_SECONDS)
     raise RuntimeError(f"Failed to fetch {url}. Last error: {last}")
 
 
 def load_selected_map() -> pd.DataFrame:
-    p = SEC_MAP_DIR / "sec_ticker_cik_selected.csv"
+    p = SEC_TICKER_MAP_CSV_SELECTED
     if not p.exists():
         raise FileNotFoundError(f"Missing {p}. Run step sec_map first.")
     df = pd.read_csv(p, dtype=str)
@@ -86,7 +101,7 @@ def main() -> None:
 
             kept = 0
             for form, fdate, acc, pdoc in zip(forms, filing_dates, accessions, primary_docs):
-                if form not in {"10-K", "10-Q"}:
+                if form not in SEC_FILINGS_FORMS:
                     continue
 
                 d = parse_ymd(s=fdate)
@@ -98,10 +113,18 @@ def main() -> None:
                 out_path = out_ticker_dir / f"{fdate}_{form}_{acc}.{ext}"
 
                 try:
-                    r = session.get(url, headers={"User-Agent": SEC_HEADERS_BASE["User-Agent"]}, timeout=60)
-                    if r.status_code in (429, 503):
-                        time.sleep(1.0)
-                        r = session.get(url, headers={"User-Agent": SEC_HEADERS_BASE["User-Agent"]}, timeout=60)
+                    r = session.get(
+                        url,
+                        headers={"User-Agent": SEC_HEADERS_BASE["User-Agent"]},
+                        timeout=SEC_FILINGS_DOWNLOAD_TIMEOUT_SECONDS,
+                    )
+                    if r.status_code in SEC_FILINGS_RETRY_STATUSES:
+                        time.sleep(SEC_RETRY_INITIAL_SLEEP_SECONDS)
+                        r = session.get(
+                            url,
+                            headers={"User-Agent": SEC_HEADERS_BASE["User-Agent"]},
+                            timeout=SEC_FILINGS_DOWNLOAD_TIMEOUT_SECONDS,
+                        )
                     r.raise_for_status()
                     out_path.write_bytes(r.content)
 
@@ -132,13 +155,13 @@ def main() -> None:
                         }
                     )
 
-                time.sleep(0.12)
+                time.sleep(SEC_FILINGS_INTER_REQUEST_SLEEP_SECONDS)
 
             print(f"Saved {ticker}: {kept} filings in range")
 
     if index_rows:
         df_idx = pd.DataFrame(index_rows).sort_values(["ticker", "filing_date", "form"])
-        out_idx = OUT_DIR / "filings_index_2022_2025.csv"
+        out_idx = OUT_DIR / f"filings_index_{START_FILED.isoformat()}_{END_FILED.isoformat()}.csv"
         df_idx.to_csv(out_idx, index=False)
         print(f"Saved: {out_idx}")
 

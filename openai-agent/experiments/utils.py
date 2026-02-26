@@ -30,7 +30,7 @@ def get_result(result: RunResult, elapsed_time: float) -> AgentResult:
         ),
         steps=steps,
         time=elapsed_time,
-        output=result.final_output.model_dump(),
+        output=result.final_output.model_dump(), ###
     )
 
 

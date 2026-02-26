@@ -1,64 +1,59 @@
-import os
-import yfinance as yf
+from __future__ import annotations
+
+from pathlib import Path
+
 import pandas as pd
+import yfinance as yf
+
+from eu_config import EU_TICKERS
+from eu_paths import LEGACY_FUNDAMENTALS_DIR, RAW_FUNDAMENTALS_DIRS, ensure_dirs
 
 
-def download_fundamentals(tickers, output_dir):
+def download_fundamentals(tickers: list[str], output_dirs: list[Path]) -> None:
     """
-    Downloads annual financial statement data
-    and stores simplified fundamental metrics.
+    Download annual fundamentals and write per-ticker + combined files
+    under data_eu (raw + legacy paths).
     """
-
-    os.makedirs(output_dir, exist_ok=True)
+    ensure_dirs(paths=output_dirs)
+    all_rows: list[pd.DataFrame] = []
 
     for ticker in tickers:
-
         print(f"Downloading fundamentals for {ticker}")
-
         stock = yf.Ticker(ticker)
 
         income = stock.financials.T
         balance = stock.balance_sheet.T
-
-        if income.empty or balance.empty:
+        if income is None or balance is None or income.empty or balance.empty:
             print(f"No fundamentals for {ticker}")
             continue
 
         df = pd.DataFrame(index=income.index)
-
         df["revenue"] = income.get("Total Revenue")
         df["net_income"] = income.get("Net Income")
         df["ebit"] = income.get("Ebit")
         df["total_assets"] = balance.get("Total Assets")
         df["cash"] = balance.get("Cash")
-
         df["ticker"] = ticker
+        df = df.reset_index().rename(columns={"index": "report_date"})
+        all_rows.append(df.copy())
 
-        df.reset_index(inplace=True)
-        df.rename(columns={"index": "report_date"}, inplace=True)
+        for d in output_dirs:
+            df.to_csv(d / f"{ticker}_fundamentals.csv", index=False)
 
-        df.to_csv(
-            os.path.join(output_dir, f"{ticker}_fundamentals.csv"),
-            index=False
-        )
+    if not all_rows:
+        raise RuntimeError("No fundamentals were downloaded.")
+
+    combined = pd.concat(all_rows, ignore_index=True).sort_values(["ticker", "report_date"]).reset_index(drop=True)
+    for d in output_dirs:
+        combined.to_csv(d / "all_fundamentals.csv", index=False)
+        try:
+            combined.to_parquet(d / "all_fundamentals.parquet", index=False)
+        except Exception as exc:
+            print(f"Parquet not written in {d}: {exc}")
 
 
 if __name__ == "__main__":
-
-    eu_tickers = [
-        "KRZ.IR",
-        "A5G.IR",
-        "BIRG.IR",
-        "ASML.AS",
-        "SAP.DE",
-        "MC.PA",
-        "NOVO-B.CO",
-        "SIE.DE",
-        "OR.PA",
-        "NESN.SW"
-    ]
-
     download_fundamentals(
-        tickers=eu_tickers,
-        output_dir="../data_eu/fundamentals"
+        tickers=EU_TICKERS,
+        output_dirs=[*RAW_FUNDAMENTALS_DIRS, LEGACY_FUNDAMENTALS_DIR],
     )
