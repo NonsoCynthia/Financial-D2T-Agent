@@ -84,8 +84,8 @@ Stored as:
 - JSON report `data/processed/benchmarks/roic_gold_benchmark_<YYYY-MM-DD>_report.json`
 
 Important behavior:
-- The benchmark `date` uses snapshot `capture_date` (no fake monthly labels as date).
-- Snapshot values are saved once per capture date (no repeated monthly rows).
+- The benchmark `date` uses website-parsed date when available, then falls back to dump `asof_date`, then snapshot `capture_date`.
+- Snapshot values are saved once per benchmark `date` (asof/fallback) (no repeated monthly rows).
 - If latest `capture_date` changes from the previous run, a new versioned CSV is created.
 
 Quick run:

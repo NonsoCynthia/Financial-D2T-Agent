@@ -19,7 +19,7 @@
   "input_dir": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data/roic_json_dumps_monthly_last_year",
   "json_files_scanned": 8,
   "latest_capture_date": "2026-02-25",
-  "out_csv_written": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/data/processed/benchmarks/roic_gold_benchmark_2026-02-25.csv",
+  "out_csv_written": "/home/chinonso/PHD_PROJECTS/Financial-D2T-Agent/openai-agent/data/processed/benchmarks/roic_gold_benchmark_2026-02-25.csv",
   "rows_new_batch": 163,
   "rows_written": 163,
   "series_constant_count": 163,

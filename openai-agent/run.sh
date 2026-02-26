@@ -27,6 +27,7 @@ MCP_FLAG=""                  # --mcp | --no-mcp | ""
 WRITE_FOLDER=""
 RESULTS_ROOT=""
 PRED_FOLDER=""
+VALIDATION_REGION_DIR=""
 
 EVAL_MODE="summary"          # summary | folder | table2 | none
 GOLD_CSV=""
@@ -37,6 +38,8 @@ GOLD_FIXED_DATE="${GOLD_FIXED_DATE:-}"
 RATIO_CLIP_QUANTILE="${RATIO_CLIP_QUANTILE:-0.0}"
 OUT_CSV=""
 SUMMARY_OUT_CSV=""
+OUT_CSV_SET_BY_USER=0
+SUMMARY_OUT_CSV_SET_BY_USER=0
 AUTO_BUILD_ROIC_GOLD=1
 AUTO_CAP_ANALYSIS_TO_GOLD=1
 ROIC_DUMPS_DIR=""
@@ -151,6 +154,13 @@ suffix_path() {
 default_pred_folder_for_arch() {
   local arch="$1"
   echo "${WRITE_FOLDER}/${MODEL}/${arch}_${REFLECTION_BOOL}"
+}
+
+table2_output_path() {
+  local kind="$1"   # rows | summary
+  local arch="$2"   # workflow | agent
+  local reflection="$3"  # true | false
+  echo "${VALIDATION_REGION_DIR}/table2_${REGION}_${kind}_${arch}_${reflection}.csv"
 }
 
 run_eval_one() {
@@ -322,10 +332,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --out-csv)
       OUT_CSV="$2"
+      OUT_CSV_SET_BY_USER=1
       shift 2
       ;;
     --summary-out-csv)
       SUMMARY_OUT_CSV="$2"
+      SUMMARY_OUT_CSV_SET_BY_USER=1
       shift 2
       ;;
     --build-roic-gold)
@@ -387,6 +399,7 @@ REFLECTION_BOOL="False"
 if [[ "${REFLECTION}" -eq 1 ]]; then
   REFLECTION_BOOL="True"
 fi
+REFLECTION_BOOL_LOWER="$(printf '%s' "${REFLECTION_BOOL}" | tr '[:upper:]' '[:lower:]')"
 
 if [[ -z "${WRITE_FOLDER}" ]]; then
   if [[ "${REGION}" == "eu" ]]; then
@@ -401,6 +414,28 @@ if [[ -z "${GOLD_CSV}" ]]; then
     GOLD_CSV="${PROJECT_ROOT}/data_eu/processed/panel/daily_panel_prices_returns_fundamentals.csv"
   else
     GOLD_CSV="${PROJECT_ROOT}/data/processed/panel/daily_panel_prices_returns_fundamentals.csv"
+  fi
+fi
+
+VALIDATION_REGION_DIR="${PROJECT_ROOT}/results/validation/${REGION}"
+if [[ -z "${OUT_CSV}" ]]; then
+  case "${EVAL_MODE}" in
+    summary)
+      OUT_CSV="${VALIDATION_REGION_DIR}/table1_${REGION}_summary.csv"
+      ;;
+    folder)
+      OUT_CSV="${VALIDATION_REGION_DIR}/folder_${REGION}_rows.csv"
+      ;;
+    table2)
+      if [[ "${MODE}" == "workflow" || "${MODE}" == "agent" ]]; then
+        OUT_CSV="$(table2_output_path "rows" "${MODE}" "${REFLECTION_BOOL_LOWER}")"
+      fi
+      ;;
+  esac
+fi
+if [[ "${EVAL_MODE}" == "table2" && -z "${SUMMARY_OUT_CSV}" ]]; then
+  if [[ "${MODE}" == "workflow" || "${MODE}" == "agent" ]]; then
+    SUMMARY_OUT_CSV="$(table2_output_path "summary" "${MODE}" "${REFLECTION_BOOL_LOWER}")"
   fi
 fi
 
@@ -509,10 +544,17 @@ import pandas as pd
 
 p = sys.argv[1]
 df = pd.read_csv(p, low_memory=False)
-if "date" not in df.columns:
+norm = {str(c).strip().lower().replace(" ", "").replace("_", ""): c for c in df.columns}
+date_col = None
+for cand in ("date", "asofdate", "asof", "as_of_date", "targetdate"):
+    key = cand.replace("_", "")
+    if key in norm:
+        date_col = norm[key]
+        break
+if date_col is None:
     print("")
     raise SystemExit(0)
-dates = pd.to_datetime(df["date"], errors="coerce").dropna()
+dates = pd.to_datetime(df[date_col], errors="coerce").dropna()
 if dates.empty:
     print("")
     raise SystemExit(0)
@@ -548,6 +590,12 @@ echo "Run plan: reasoning_policy=analyst:medium manager:high"
 if [[ "${EVAL_MODE}" == "table2" ]]; then
   echo "Run plan: table2_ratio_clip_quantile=${RATIO_CLIP_QUANTILE}"
   echo "Run plan: table2_gold_benchmark_csv=${GOLD_BENCHMARK_CSV}"
+  if [[ "${MODE}" == "both" ]]; then
+    echo "Run plan: table2_out_csv=per-arch auto naming (table2_${REGION}_{rows|summary}_{workflow|agent}_${REFLECTION_BOOL_LOWER}.csv)"
+  else
+    echo "Run plan: table2_out_csv=${OUT_CSV}"
+    echo "Run plan: table2_summary_out_csv=${SUMMARY_OUT_CSV}"
+  fi
   echo "Run plan: table2_auto_build_roic_gold=${AUTO_BUILD_ROIC_GOLD}"
   echo "Run plan: table2_cap_analysis_to_gold=${AUTO_CAP_ANALYSIS_TO_GOLD}"
   if [[ -n "${ROIC_DUMPS_DIR}" ]]; then
@@ -624,8 +672,22 @@ if [[ "${RUN_EVAL}" -eq 1 && "${EVAL_MODE}" != "none" ]]; then
             echo "Skipping ${arch} evaluation: folder not found at ${pred_folder_arch}"
             continue
           fi
-          out_arch="$(suffix_path "${OUT_CSV}" "${arch}")"
-          summary_arch="$(suffix_path "${SUMMARY_OUT_CSV}" "${arch}")"
+          if [[ "${EVAL_MODE}" == "table2" ]]; then
+            if [[ "${OUT_CSV_SET_BY_USER}" -eq 1 ]]; then
+              out_arch="$(suffix_path "${OUT_CSV}" "${arch}_${REFLECTION_BOOL_LOWER}")"
+            else
+              out_arch="$(table2_output_path "rows" "${arch}" "${REFLECTION_BOOL_LOWER}")"
+            fi
+
+            if [[ "${SUMMARY_OUT_CSV_SET_BY_USER}" -eq 1 ]]; then
+              summary_arch="$(suffix_path "${SUMMARY_OUT_CSV}" "${arch}_${REFLECTION_BOOL_LOWER}")"
+            else
+              summary_arch="$(table2_output_path "summary" "${arch}" "${REFLECTION_BOOL_LOWER}")"
+            fi
+          else
+            out_arch="$(suffix_path "${OUT_CSV}" "${arch}")"
+            summary_arch="$(suffix_path "${SUMMARY_OUT_CSV}" "${arch}")"
+          fi
           run_eval_one "${arch}" "${pred_folder_arch}" "${out_arch}" "${summary_arch}"
         done
       else
@@ -644,22 +706,43 @@ fi
 # - Reasoning policy is enforced in code: analyst=medium, manager=high.
 # - Use --analysis-only for generation and --eval-only for evaluation-only mode.
 # - For a fast single-month run:
-#   ./run.sh --region us --mode workflow --ticker AAPL --analysis-only --n-times 1 --max-turns 8 --analysis-start-date 2025-12-01 --analysis-end-date 2026-02-25                                                                                                                                               --inter-run-sleep-seconds 0
+#   ./run.sh --region us --mode workflow --ticker AAPL --analysis-only --n-times 1 --max-turns 8 --analysis-start-date 2025-12-01 --analysis-end-date 2026-02-25 --inter-run-sleep-seconds 0
+# EU
+# ./run.sh --region eu --mode workflow --ticker ASML.AS --analysis-only --n-times 1 --max-turns 8 --analysis-start-date 2025-01-01 --analysis-end-date 2026-02-26 --inter-run-sleep-seconds 0
 
-# Table 1
+# Table 1 (run from repo root: Financial-D2T-Agent)
 # ./openai-agent/run.sh \
 #   --region us \
 #   --eval-only \
 #   --eval-mode summary \
 #   --results-root "$PWD/results/final_report2025_us" \
-#   --out-csv "$PWD/results/validation/table1_us_summary.csv"
+#   --out-csv "$PWD/results/validation/us/table1_us_summary.csv"
+
+# ./openai-agent/run.sh \
+#   --region eu \
+#   --eval-only \
+#   --eval-mode summary \
+#   --results-root "$PWD/results/final_report2025_eu" \
+#   --out-csv "$PWD/results/validation/eu/table1_eu_summary.csv"
+
 
 # Table 2
 # ./openai-agent/run.sh \
 #   --region us \
-#   --mode both \
+#   --mode workflow \
 #   --eval-only \
 #   --eval-mode table2 \
 #   --gold-benchmark-csv "$PWD/data/processed/benchmarks/roic_gold_benchmark_2026-02-25.csv" \
-#   --out-csv "$PWD/results/validation/table2_us_rows.csv" \
-#   --summary-out-csv "$PWD/results/validation/table2_us_summary.csv"                                                                                                                                                         
+#   --out-csv "$PWD/results/validation/us/table2_us_rows_workflow_false.csv" \
+#   --summary-out-csv "$PWD/results/validation/us/table2_us_summary_workflow_false.csv"
+
+# ./openai-agent/run.sh \
+#   --region eu \
+#   --mode workflow \
+#   --eval-only \
+#   --eval-mode table2 \
+#   --gold-benchmark-csv "$PWD/data_eu/processed/benchmarks/roic_gold_benchmark_2026-02-26.csv" \
+#   --out-csv "$PWD/results/validation/eu/table2_eu_rows_workflow_false.csv" \
+#   --summary-out-csv "$PWD/results/validation/eu/table2_eu_summary_workflow_false.csv"
+
+# Add --reflection to evaluate *_True folders and get *_true.csv suffixes.

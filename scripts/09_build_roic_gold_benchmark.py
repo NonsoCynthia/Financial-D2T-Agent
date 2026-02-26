@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import re
@@ -44,6 +45,7 @@ MISSING_TOKENS = {"", "-", "--", "na", "n/a", "none", "null", "nan"}
 SUFFIX_SCALE = {"K": 1e3, "M": 1e6, "B": 1e9, "T": 1e12}
 DATE_LIKE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
 DATE_SUFFIX_RE = re.compile(r"_\d{4}-\d{2}-\d{2}$")
+ASOF_FROM_FILENAME_RE = re.compile(r"_asof_(\d{4}-\d{2}-\d{2})\.json$")
 
 BASE_OUTPUT_COLS = [
     "ticker",
@@ -112,17 +114,85 @@ def _parse_scaled_number(value: Any) -> tuple[float | None, str | None]:
     return out, unit_hint
 
 
+def _normalise_iso_date(value: Any) -> str:
+    if value is None:
+        return ""
+    dt = pd.to_datetime(str(value).strip(), errors="coerce")
+    if pd.isna(dt):
+        return ""
+    return dt.strftime("%Y-%m-%d")
+
+
+def _asof_date_from_dump(payload: dict[str, Any], path: Path) -> str:
+    # Primary: explicit payload field from downloader.
+    asof = _normalise_iso_date(payload.get("asof_date"))
+    if asof:
+        return asof
+
+    # Compatibility: alternate key if present in external dumps.
+    asof = _normalise_iso_date(payload.get("as_of_date"))
+    if asof:
+        return asof
+
+    # Fallback: parse from filename roic_<ticker>_asof_<YYYY-MM-DD>.json
+    match = ASOF_FROM_FILENAME_RE.search(path.name)
+    if match is not None:
+        return str(match.group(1))
+
+    return ""
+
+
+def _website_date_from_html(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+
+    # First pass: metadata-like JSON keys often present in embedded script payloads.
+    meta_patterns = [
+        r'"(?:dateModified|datePublished|lastModified|updatedAt|updateDate|asOfDate|as_of_date|snapshotDate)"\s*:\s*"([^"]+)"',
+    ]
+    for pat in meta_patterns:
+        m = re.search(pat, raw_html, flags=re.IGNORECASE)
+        if m is not None:
+            iso = _normalise_iso_date(m.group(1))
+            if iso:
+                return iso
+
+    # Second pass: visible text labels that imply page-level freshness dates.
+    text = html.unescape(raw_html).replace("\xa0", " ")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    label_patterns = [
+        r"(?i)(?:as\s*of|as-of|last\s*updated|updated\s*on|updated)\s*[:\-]?\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})",
+        r"(?i)(?:as\s*of|as-of|last\s*updated|updated\s*on|updated)\s*[:\-]?\s*(\d{1,2}/\d{1,2}/\d{2,4})",
+        r"(?i)(?:as\s*of|as-of|last\s*updated|updated\s*on|updated)\s*[:\-]?\s*(\d{4}-\d{2}-\d{2})",
+    ]
+    for pat in label_patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m is not None:
+            iso = _normalise_iso_date(m.group(1))
+            if iso:
+                return iso
+
+    return ""
+
+
 def _iter_rows_from_dump(path: Path, source_name: str) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
 
     ticker = str(payload.get("ticker") or "").strip().upper()
     downloaded_at_utc = str(payload.get("downloaded_at_utc") or "").strip()
-    capture_date = downloaded_at_utc[:10] if downloaded_at_utc else ""
+    capture_date = _normalise_iso_date(downloaded_at_utc[:10] if downloaded_at_utc else "")
+    website_date = _website_date_from_html(raw_html=str(payload.get("raw_html") or ""))
+    asof_date = _asof_date_from_dump(payload=payload, path=path)
 
-    # Requested behavior: use capture date only (snapshot date).
-    date_for_eval = capture_date
+    # Preferred benchmark date is the website-parsed date.
+    # Fallback sequence: website date -> asof_date -> capture_date.
+    date_for_eval = website_date or asof_date or capture_date
+    if not capture_date:
+        capture_date = date_for_eval
 
-    if not ticker or not capture_date:
+    if not ticker or not date_for_eval:
         return []
 
     rows_out: list[dict[str, Any]] = []
@@ -337,7 +407,10 @@ def build_gold_csv_from_roic_dumps(
         "date_max": str(out_df["date"].max()),
         "capture_dates_unique_count": int(len(capture_dates)),
         "capture_dates": capture_dates,
-        "date_definition": "date is capture snapshot date (downloaded_at_utc[:10])",
+        "date_definition": (
+            "date uses website-parsed date when available, fallback to asof_date "
+            "(payload/filename), then capture_date from downloaded_at_utc[:10]"
+        ),
         "dates_per_ticker": dates_per_ticker,
         "latest_capture_date": latest_capture_date,
         "series_count": int(n_series),
@@ -370,7 +443,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Build table2-compatible gold benchmark CSV from ROIC statistics JSON dumps. "
-            "The output 'date' column uses capture_date (snapshot date)."
+            "The output 'date' column uses website-parsed date, with asof/capture fallback."
         )
     )
     parser.add_argument(
