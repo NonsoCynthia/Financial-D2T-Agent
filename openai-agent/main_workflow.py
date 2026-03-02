@@ -152,6 +152,7 @@ def main():
         monthly = _monthly_panel(ticker=ticker)
         if monthly.empty:
             continue
+        open_positions: list[float] = []
 
         for i in range(len(monthly) - 1):
             row = monthly.iloc[i]
@@ -226,12 +227,40 @@ def main():
             decision["next_price"] = next_price
             all_decisions.append(decision)
 
-            # Compute strategy return: BUY means take next month return, else 0
+            # Thiago-style simulation with explicit position tracking:
+            # - BUY always opens/adds a position (including the first signal).
+            # - SELL closes all open positions at the current price using average entry.
             rec = str(decision.get("recommendation", "HOLD")).upper()
             monthly_ret = (next_price / price - 1.0) if price > 0 else 0.0
-            strat_ret = monthly_ret if rec == "BUY" else 0.0
+            avg_entry_before = float(np.mean(open_positions)) if open_positions else None
+            n_open_before = int(len(open_positions))
+            action = "hold"
+            trade_return = 0.0
+
+            if rec == "BUY":
+                open_positions.append(price)
+                action = "open_or_add_position"
+            elif rec == "SELL":
+                if open_positions:
+                    avg_entry = float(np.mean(open_positions))
+                    trade_return = (price / avg_entry - 1.0) if avg_entry > 0 else 0.0
+                    open_positions = []
+                    action = "close_all_positions"
+                else:
+                    action = "sell_without_open_position"
+            else:
+                action = "hold_or_other"
+
             decision["monthly_return"] = monthly_ret
-            decision["strategy_return"] = strat_ret
+            decision["strategy_return"] = trade_return
+            decision["signal_action"] = action
+            decision["trade_return_on_signal"] = trade_return
+            decision["n_open_positions_before_signal"] = n_open_before
+            decision["avg_entry_price_before_signal"] = avg_entry_before
+            decision["n_open_positions_after_signal"] = int(len(open_positions))
+            decision["avg_entry_price_after_signal"] = (
+                float(np.mean(open_positions)) if open_positions else None
+            )
 
             # Compute cumulative return and sharpe for this ticker so far
             ticker_decisions = [d for d in all_decisions if d["stock_id"] == ticker]
@@ -253,6 +282,41 @@ def main():
                 df_check.to_csv(f"{WRITE_FOLDER}/yahoo_spotcheck_{SPOTCHECK_MONTH}.csv", index=False)
 
             time.sleep(5)
+
+        # Final liquidation on the last available simulation day for this ticker.
+        if open_positions:
+            final_row = monthly.iloc[-1]
+            try:
+                final_price = float(final_row["price_close"])
+            except Exception:
+                final_price = None
+            final_date = str(final_row.get("date"))
+
+            if final_price is not None:
+                avg_entry = float(np.mean(open_positions))
+                liquidation_return = (final_price / avg_entry - 1.0) if avg_entry > 0 else 0.0
+                liquidation_decision = {
+                    "stock_id": ticker,
+                    "analysis_date": final_date,
+                    "recommendation": "FORCED_SELL_FINAL_DAY",
+                    "price": final_price,
+                    "next_price": None,
+                    "monthly_return": 0.0,
+                    "strategy_return": liquidation_return,
+                    "signal_action": "forced_final_liquidation",
+                    "trade_return_on_signal": liquidation_return,
+                    "n_open_positions_before_signal": int(len(open_positions)),
+                    "avg_entry_price_before_signal": avg_entry,
+                    "n_open_positions_after_signal": 0,
+                    "avg_entry_price_after_signal": None,
+                }
+                all_decisions.append(liquidation_decision)
+
+                ticker_decisions = [d for d in all_decisions if d["stock_id"] == ticker]
+                strat = np.array([float(d.get("strategy_return", 0.0)) for d in ticker_decisions], dtype=float)
+                liquidation_decision["cum_return"] = float(np.prod(1.0 + strat) - 1.0)
+                liquidation_decision["sharpe_12m"] = _sharpe(monthly_returns=strat[-12:])
+                _save_json(path=f"{WRITE_FOLDER}/decisions_sample.json", payload=all_decisions)
 
 
 if __name__ == "__main__":

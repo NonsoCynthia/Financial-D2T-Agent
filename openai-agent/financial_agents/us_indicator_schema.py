@@ -11,9 +11,9 @@ class USIndicator(StrEnum):
     # Balance sheet
     ASSETS = "Assets" #the total assets, rights, and value that the company owns
     CURRENT_ASSETS = "CurrentAssets" #total assets and rights that the company owns and can be converted into cash in the short term, usually in one year
-    CASH_AND_EQUIVALENTS = "CashAndEquivalents" #the amounts that the company has in cash, banks, and cash equivalents
-    GROSS_DEBT = "GrossDebt" #Crosscheck with: GrossDebt = ShortTermDebt + LongTermDebt
-    NET_DEBT = "NetDebt" #Crosscheck with:NET_DEBT = GROSS_DEBT - CASH_AND_EQUIVALENTS
+    CASH_AND_EQUIVALENTS = "CashAndEquivalents" #cash & cash equivalents only (exclude short-term investments)
+    GROSS_DEBT = "GrossDebt" #Crosscheck with: GrossDebt = ShortTermDebt + LongTermDebt (total debt)
+    NET_DEBT = "NetDebt" #Crosscheck with: NET_DEBT = GROSS_DEBT - CASH_AND_EQUIVALENTS
     SHAREHOLDERS_EQUITY = "ShareholdersEquity" #Crosscheck with: ShareholdersEquity = Assets - TotalLiabilities
 
     # Income statement (TTM and quarter)
@@ -53,7 +53,7 @@ class USIndicator(StrEnum):
     # Liquidity and leverage
     CURRENT_RATIO = "CurrentRatio" #CurrentRatio = (CurrentAssets - CurrentLiabilities) / CurrentLiabilities
     # OR CurrentAssets / CurrentLiabilities
-    GROSS_DEBT_TO_EQUITY = "GrossDebt_Equity" #GrossDebt_Equity = GrossDebt / ShareholdersEquity
+    GROSS_DEBT_TO_EQUITY = "GrossDebt_Equity" #GrossDebt_Equity = GrossDebt / ShareholdersEquity (ratio/multiple, not percent)
 
     # Efficiency
     ASSET_TURNOVER = "AssetTurnover" #AssetTurnover = NetRevenue / Assets OR NetRevenue_TTM / average(Assets)

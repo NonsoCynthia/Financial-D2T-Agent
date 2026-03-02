@@ -40,11 +40,38 @@ CONCEPTS = [
 
 CONCEPT_ITEM_PRIORITY: dict[str, list[str]] = {
     "Assets": ["Total Assets", "Assets", "Current Assets"],
+    "CurrentAssets": ["Current Assets"],
+    "CashAndEquivalents": [
+        "Cash And Cash Equivalents",
+        "Cash Cash Equivalents And Short Term Investments",
+        "Cash Equivalents",
+        "Cash Financial",
+        "Cash",
+    ],
     "Liabilities": [
         "Total Liabilities Net Minority Interest",
         "Liabilities",
         "Current Liabilities",
         "Total Non Current Liabilities Net Minority Interest",
+    ],
+    "CurrentLiabilities": [
+        "Current Liabilities",
+        "Other Current Liabilities",
+    ],
+    "GrossDebt": [
+        "Total Debt",
+        "Long Term Debt And Capital Lease Obligation",
+        "Long Term Debt",
+        "Current Debt And Capital Lease Obligation",
+        "Current Debt",
+    ],
+    "LongTermDebt": [
+        "Long Term Debt And Capital Lease Obligation",
+        "Long Term Debt",
+    ],
+    "CurrentDebt": [
+        "Current Debt And Capital Lease Obligation",
+        "Current Debt",
     ],
     "StockholdersEquity": [
         "Stockholders Equity",
@@ -60,17 +87,42 @@ CONCEPT_ITEM_PRIORITY: dict[str, list[str]] = {
         "Net Income Including Noncontrolling Interests",
     ],
     "OperatingIncomeLoss": ["Operating Income", "Total Operating Income As Reported"],
+    "GrossProfit": ["Gross Profit"],
+    "EBITDA": ["EBITDA", "Normalized EBITDA"],
+    "DepreciationAndAmortization": [
+        "Depreciation And Amortization",
+        "Reconciled Depreciation",
+        "Depreciation Amortization Depletion",
+        "Depreciation And Amortization In Income Statement",
+        "Depreciation",
+        "Amortization",
+    ],
+    "AccountsPayable": [
+        "Accounts Payable",
+        "Payables",
+        "Payables And Accrued Expenses",
+    ],
     "EarningsPerShareBasic": ["Basic EPS"],
     "CommonStockSharesOutstanding": ["Ordinary Shares Number", "Share Issued", "Basic Average Shares"],
 }
 
 CONCEPT_UNIT = {
     "Assets": "LOCAL_CURRENCY",
+    "CurrentAssets": "LOCAL_CURRENCY",
+    "CashAndEquivalents": "LOCAL_CURRENCY",
     "Liabilities": "LOCAL_CURRENCY",
+    "CurrentLiabilities": "LOCAL_CURRENCY",
+    "GrossDebt": "LOCAL_CURRENCY",
+    "LongTermDebt": "LOCAL_CURRENCY",
+    "CurrentDebt": "LOCAL_CURRENCY",
     "StockholdersEquity": "LOCAL_CURRENCY",
     "Revenues": "LOCAL_CURRENCY",
     "NetIncomeLoss": "LOCAL_CURRENCY",
     "OperatingIncomeLoss": "LOCAL_CURRENCY",
+    "GrossProfit": "LOCAL_CURRENCY",
+    "EBITDA": "LOCAL_CURRENCY",
+    "DepreciationAndAmortization": "LOCAL_CURRENCY",
+    "AccountsPayable": "LOCAL_CURRENCY",
     "EarningsPerShareBasic": "LOCAL_CURRENCY_PER_SHARE",
     "CommonStockSharesOutstanding": "shares",
 }
@@ -327,7 +379,14 @@ def _facts_from_fundamentals(fund_dir: Path) -> pd.DataFrame:
 
     concept_cols = [
         ("total_assets", "Assets"),
+        ("current_assets", "CurrentAssets"),
+        ("cash", "CashAndEquivalents"),
+        ("cash_and_equivalents", "CashAndEquivalents"),
+        ("current_liabilities", "CurrentLiabilities"),
+        ("total_debt", "GrossDebt"),
         ("revenue", "Revenues"),
+        ("gross_profit", "GrossProfit"),
+        ("ebitda", "EBITDA"),
         ("net_income", "NetIncomeLoss"),
         ("ebit", "OperatingIncomeLoss"),
     ]

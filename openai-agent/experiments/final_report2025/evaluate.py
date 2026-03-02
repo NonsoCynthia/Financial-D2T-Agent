@@ -98,11 +98,15 @@ def _load_pred_outputs(folder: Path) -> List[Tuple[str, int, str | None, Dict[st
     Load Thiago-style per-stock outputs:
       - <ticker>_output_<k>.json contains {"indicators":[{"indicator":..., "value":...}, ...]}
       - <ticker>_<k>.json contains usage counters
+    Supports both flat folders and per-ticker subfolders.
     Returns list of (ticker, run_id, analysis_date, pred_map, usage_map)
     """
-    out: List[Tuple[str, int, str | None, Dict[str, float], Dict[str, int]]] = []
+    out_by_key: Dict[
+        Tuple[str, int, str | None],
+        Tuple[str, int, str | None, Dict[str, float], Dict[str, int], float],
+    ] = {}
 
-    for p in sorted(folder.glob("*_output_*.json")):
+    for p in sorted(folder.rglob("*_output_*.json")):
         name = p.name
         try:
             ticker, stem_left, run_id, parsed_analysis_date = _parse_output_filename(name=name)
@@ -131,8 +135,17 @@ def _load_pred_outputs(folder: Path) -> List[Tuple[str, int, str | None, Dict[st
             "total_tokens": int(usage.get("total_tokens", 0) or 0),
         }
 
-        out.append((ticker, run_id, analysis_date, preds, usage_map))
+        key = (ticker, run_id, analysis_date)
+        mtime = float(p.stat().st_mtime)
+        current = out_by_key.get(key)
+        if current is None or mtime >= current[5]:
+            out_by_key[key] = (ticker, run_id, analysis_date, preds, usage_map, mtime)
 
+    out = [
+        (ticker, run_id, analysis_date, preds, usage_map)
+        for (ticker, run_id, analysis_date, preds, usage_map, _mtime) in out_by_key.values()
+    ]
+    out.sort(key=lambda row: (row[0], row[2] or "", row[1]))
     return out
 
 
@@ -151,7 +164,13 @@ def _normalise_recommendation(value: str) -> str:
 
 def _manager_recommendation_counts(folder: Path) -> Dict[str, int]:
     counts = {"buy": 0, "hold": 0, "sell": 0, "other": 0}
-    for path in sorted(folder.glob("*_manager_decision_*.json")):
+    latest_by_name: Dict[str, Path] = {}
+    for path in sorted(folder.rglob("*_manager_decision_*.json")):
+        current = latest_by_name.get(path.name)
+        if current is None or path.stat().st_mtime >= current.stat().st_mtime:
+            latest_by_name[path.name] = path
+
+    for path in sorted(latest_by_name.values()):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:

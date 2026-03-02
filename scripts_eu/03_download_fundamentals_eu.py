@@ -29,10 +29,16 @@ def download_fundamentals(tickers: list[str], output_dirs: list[Path]) -> None:
 
         df = pd.DataFrame(index=income.index)
         df["revenue"] = income.get("Total Revenue")
+        df["gross_profit"] = income.get("Gross Profit")
+        df["ebitda"] = income.get("EBITDA")
         df["net_income"] = income.get("Net Income")
         df["ebit"] = income.get("Ebit")
         df["total_assets"] = balance.get("Total Assets")
+        df["current_assets"] = balance.get("Current Assets")
+        df["current_liabilities"] = balance.get("Current Liabilities")
+        df["total_debt"] = balance.get("Total Debt")
         df["cash"] = balance.get("Cash")
+        df["cash_and_equivalents"] = balance.get("Cash And Cash Equivalents")
         df["ticker"] = ticker
         df = df.reset_index().rename(columns={"index": "report_date"})
         all_rows.append(df.copy())
