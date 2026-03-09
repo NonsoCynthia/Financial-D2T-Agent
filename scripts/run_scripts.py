@@ -22,16 +22,16 @@ from config import (
 STEP_ORDER = list(SCRIPT_PIPELINE_STEP_ORDER)
 
 STEP_SCRIPTS = {
-    # "download_prices": SCRIPT_DIR / "01_download_prices.py",
-    # "sec_map": SCRIPT_DIR / "02_sec_ticker_cik.py",
-    # "sec_companyfacts": SCRIPT_DIR / "03a_sec_companyfacts.py",
-    # "sec_filings": SCRIPT_DIR / "03b_sec_download_filings.py",
-    # "compute_returns": SCRIPT_DIR / "04a_compute_returns.py",
-    # "align_fundamentals": SCRIPT_DIR / "04b_align_fundamentals.py",
-    # "make_splits": SCRIPT_DIR / "05_make_splits.py",
-    # "monthly_panel": SCRIPT_DIR / "06_make_monthly_panel.py",
-    # "yahoo_spotcheck": SCRIPT_DIR / "07_yahoo_gold_spotcheck.py",
-    # "fundamental_db": SCRIPT_DIR / "08_build_mcp_db.py",
+    "download_prices": SCRIPT_DIR / "01_download_prices.py",
+    "sec_map": SCRIPT_DIR / "02_sec_ticker_cik.py",
+    "sec_companyfacts": SCRIPT_DIR / "03a_sec_companyfacts.py",
+    "sec_filings": SCRIPT_DIR / "03b_sec_download_filings.py",
+    "compute_returns": SCRIPT_DIR / "04a_compute_returns.py",
+    "align_fundamentals": SCRIPT_DIR / "04b_align_fundamentals.py",
+    "make_splits": SCRIPT_DIR / "05_make_splits.py",
+    "monthly_panel": SCRIPT_DIR / "06_make_monthly_panel.py",
+    "yahoo_spotcheck": SCRIPT_DIR / "07_yahoo_gold_spotcheck.py",
+    "fundamental_db": SCRIPT_DIR / "08_build_mcp_db.py",
     "roic_gold_benchmark": SCRIPT_DIR / "09_build_roic_gold_benchmark.py",
     "roic_dump_download": SCRIPT_DIR / "10_download_roic_snapshots.py",
 }
@@ -76,6 +76,10 @@ def _run_roic_dump_download(args: argparse.Namespace) -> int:
         "--mode",
         "single",
     ]
+    if bool(args.preserve_roic_dumps):
+        cmd.append("--no-prune-existing")
+    else:
+        cmd.append("--prune-existing")
     print(f"Running [roic_dump_download]: {' '.join(cmd)}", flush=True)
     return subprocess.run(cmd, check=False, cwd=str(PROJECT_ROOT)).returncode
 
@@ -128,6 +132,10 @@ def run_step(step: str, args: argparse.Namespace, from_all: bool = False) -> int
                 str(args.roic_source_name),
             ]
         )
+        if bool(args.preserve_existing_output):
+            cmd.append("--preserve-existing-output")
+        else:
+            cmd.append("--overwrite-existing-output")
 
     print(f"Running [{step}]: {' '.join(cmd)}", flush=True)
     proc = subprocess.run(cmd, check=False, cwd=str(PROJECT_ROOT))
@@ -174,7 +182,33 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Disable auto-download when ROIC dumps are missing.",
     )
+    parser.add_argument(
+        "--preserve-roic-dumps",
+        dest="preserve_roic_dumps",
+        action="store_true",
+        help="Keep historical ROIC dump files when downloading snapshots (default).",
+    )
+    parser.add_argument(
+        "--prune-roic-dumps",
+        dest="preserve_roic_dumps",
+        action="store_false",
+        help="Delete historical ROIC dump files outside the requested snapshot date.",
+    )
+    parser.add_argument(
+        "--preserve-existing-output",
+        dest="preserve_existing_output",
+        action="store_true",
+        help="Write versioned benchmark output files instead of overwriting existing ones (default).",
+    )
+    parser.add_argument(
+        "--overwrite-existing-output",
+        dest="preserve_existing_output",
+        action="store_false",
+        help="Allow benchmark output files to overwrite existing files.",
+    )
     parser.set_defaults(auto_download_roic=True)
+    parser.set_defaults(preserve_roic_dumps=True)
+    parser.set_defaults(preserve_existing_output=True)
     return parser.parse_args()
 
 

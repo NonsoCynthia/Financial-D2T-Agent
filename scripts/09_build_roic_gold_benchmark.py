@@ -289,6 +289,33 @@ def _versioned_path(path: Path, suffix_date: str) -> Path:
     return path.with_name(f"{new_stem}{path.suffix}")
 
 
+def _path_with_run_version(path: Path, version: int) -> Path:
+    return path.with_name(f"{path.stem}_v{version}{path.suffix}")
+
+
+def _resolve_non_overwriting_outputs(
+    out_csv: Path,
+    report_json: Path | None,
+    preserve_existing_output: bool,
+) -> tuple[Path, Path | None, str | None]:
+    if not preserve_existing_output:
+        return out_csv, report_json, None
+
+    if not out_csv.exists() and (report_json is None or not report_json.exists()):
+        return out_csv, report_json, None
+
+    version = 2
+    while True:
+        candidate_csv = _path_with_run_version(path=out_csv, version=version)
+        candidate_report = (
+            _path_with_run_version(path=report_json, version=version) if report_json is not None else None
+        )
+        if not candidate_csv.exists() and (candidate_report is None or not candidate_report.exists()):
+            note = f"existing_output_detected; writing versioned output: v{version}"
+            return candidate_csv, candidate_report, note
+        version += 1
+
+
 def _resolve_output_paths_by_capture(
     out_csv: Path,
     report_json: Path | None,
@@ -315,6 +342,7 @@ def build_gold_csv_from_roic_dumps(
     out_csv: Path,
     report_json: Path | None,
     source_name: str = "roic.ai",
+    preserve_existing_output: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     resolved_in_dir, fallback_note = _resolve_input_dir(in_dir=in_dir)
     if not resolved_in_dir.exists():
@@ -380,6 +408,13 @@ def build_gold_csv_from_roic_dumps(
         report_json=report_json,
         latest_capture_date=latest_capture_date,
     )
+    out_csv_resolved, report_json_resolved, non_overwrite_note = _resolve_non_overwriting_outputs(
+        out_csv=out_csv_resolved,
+        report_json=report_json_resolved,
+        preserve_existing_output=preserve_existing_output,
+    )
+    if non_overwrite_note:
+        output_version_note = f"{output_version_note}; {non_overwrite_note}" if output_version_note else non_overwrite_note
 
     out_csv_resolved.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_csv_resolved, index=False)
@@ -470,6 +505,19 @@ def parse_args() -> argparse.Namespace:
         default="roic.ai",
         help="Source label written into CSV.",
     )
+    parser.add_argument(
+        "--preserve-existing-output",
+        dest="preserve_existing_output",
+        action="store_true",
+        help="Do not overwrite an existing output file; write a versioned file instead (default).",
+    )
+    parser.add_argument(
+        "--overwrite-existing-output",
+        dest="preserve_existing_output",
+        action="store_false",
+        help="Overwrite existing output paths if they already exist.",
+    )
+    parser.set_defaults(preserve_existing_output=True)
     return parser.parse_args()
 
 
@@ -480,6 +528,7 @@ def main() -> int:
         out_csv=args.out_csv.expanduser().resolve(),
         report_json=args.report_json.expanduser().resolve() if args.report_json else None,
         source_name=args.source_name.strip() or "roic.ai",
+        preserve_existing_output=bool(args.preserve_existing_output),
     )
 
     out_csv_written = report.get("out_csv_written", str(args.out_csv))

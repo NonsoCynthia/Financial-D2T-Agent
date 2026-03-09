@@ -194,9 +194,9 @@ def parse_args() -> argparse.Namespace:
         "--no-prune-existing",
         dest="prune_existing",
         action="store_false",
-        help="Keep existing historical ROIC dump files.",
+        help="Keep existing historical ROIC dump files (default).",
     )
-    parser.set_defaults(prune_existing=True)
+    parser.set_defaults(prune_existing=False)
     return parser.parse_args()
 
 
