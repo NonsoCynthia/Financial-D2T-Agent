@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -93,6 +93,108 @@ def _parse_output_filename(name: str) -> Tuple[str, str, int, str | None]:
     return ticker, left, run_id, analysis_date
 
 
+def _parse_manager_decision_filename(name: str) -> Tuple[str, int, str | None]:
+    m = re.match(r"^(?P<left>.+)_manager_decision_(?P<run_id>\d+)\.json$", name)
+    if m is None:
+        raise ValueError(f"Unexpected manager decision filename format: {name}")
+
+    left = m.group("left")
+    run_id = int(m.group("run_id"))
+
+    m_left = re.match(r"^(?P<ticker>[A-Za-z0-9.\-]+?)(?:_(?P<analysis_date>\d{4}-\d{2}-\d{2}))?$", left)
+    if m_left is None:
+        return left.upper(), run_id, None
+
+    ticker = m_left.group("ticker").upper()
+    analysis_date = m_left.group("analysis_date")
+    return ticker, run_id, analysis_date
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_manager_pnl(payload: dict) -> Dict[str, Any]:
+    recommendation = str(payload.get("recommendation", "") or "").strip() or None
+    signal_action = str(payload.get("signal_action", "") or "").strip() or None
+
+    trade_return = _safe_float(payload.get("trade_return_on_signal"))
+    strategy_return = _safe_float(payload.get("strategy_return"))
+    cum_return = _safe_float(payload.get("cum_return"))
+    sharpe_12m = _safe_float(payload.get("sharpe_12m"))
+
+    # Derive realized trade return only when meaningfully available.
+    if trade_return is None:
+        price = _safe_float(payload.get("price"))
+        avg_entry_before = _safe_float(payload.get("avg_entry_price_before_signal"))
+        action = (signal_action or "").lower()
+        if (
+            price is not None
+            and avg_entry_before is not None
+            and avg_entry_before != 0.0
+            and ("close" in action or "liquidation" in action)
+        ):
+            trade_return = float(price / avg_entry_before - 1.0)
+
+    if strategy_return is None and trade_return is not None:
+        strategy_return = float(trade_return)
+
+    pnl_available = int(
+        (trade_return is not None)
+        or (strategy_return is not None)
+        or (cum_return is not None)
+    )
+
+    return {
+        "recommendation": recommendation,
+        "signal_action": signal_action,
+        "trade_return_on_signal": trade_return,
+        "strategy_return": strategy_return,
+        "cum_return": cum_return,
+        "sharpe_12m": sharpe_12m,
+        "pnl_available": pnl_available,
+    }
+
+
+def _load_manager_decision_pnl(folder: Path) -> Dict[Tuple[str, int, str | None], Dict[str, Any]]:
+    """
+    Load per-analysis manager P/L metrics keyed by (ticker, run_id, analysis_date).
+
+    Metrics are optional and only populated when present/derivable from manager
+    decisions. This is used by validation outputs to report P/L where available.
+    """
+    out_by_key: Dict[Tuple[str, int, str | None], Tuple[Dict[str, Any], float]] = {}
+
+    for p in sorted(folder.rglob("*_manager_decision_*.json")):
+        name = p.name
+        try:
+            ticker, run_id, parsed_analysis_date = _parse_manager_decision_filename(name=name)
+        except ValueError:
+            continue
+
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        payload_analysis_date = str(payload.get("analysis_date", "")).strip() or None
+        analysis_date = parsed_analysis_date or payload_analysis_date
+        key = (ticker, run_id, analysis_date)
+
+        metrics = _extract_manager_pnl(payload=payload)
+        mtime = float(p.stat().st_mtime)
+        current = out_by_key.get(key)
+        if current is None or mtime >= current[1]:
+            out_by_key[key] = (metrics, mtime)
+
+    return {k: v[0] for k, v in out_by_key.items()}
+
+
 def _load_pred_outputs(folder: Path) -> List[Tuple[str, int, str | None, Dict[str, float], Dict[str, int]]]:
     """
     Load Thiago-style per-stock outputs:
@@ -163,9 +265,12 @@ def _normalise_recommendation(value: str) -> str:
 
 
 def _manager_recommendation_counts(folder: Path) -> Dict[str, int]:
+    """Count Buy/Sell/Hold/Other recommendations across all manager decisions."""
     counts = {"buy": 0, "hold": 0, "sell": 0, "other": 0}
     latest_by_name: Dict[str, Path] = {}
     for path in sorted(folder.rglob("*_manager_decision_*.json")):
+        if "forced" in path.name:
+            continue
         current = latest_by_name.get(path.name)
         if current is None or path.stat().st_mtime >= current.stat().st_mtime:
             latest_by_name[path.name] = path
@@ -179,6 +284,93 @@ def _manager_recommendation_counts(folder: Path) -> Dict[str, int]:
         category = _normalise_recommendation(value=recommendation)
         counts[category] += 1
     return counts
+
+
+def _portfolio_pnl_summary(folder: Path) -> Dict[str, float]:
+    """
+    Aggregate portfolio-level P&L from manager decisions and forced
+    liquidations.
+
+    For each (ticker, run_id) pair, the final cumulative return is taken
+    from the forced_liquidation file (if it exists) or the last manager
+    decision file.
+
+    Returns:
+        Dict with: mean_cum_return, n_tickers_traded, per_ticker_cum_returns
+        (the last one is a JSON-friendly dict for interpretability).
+    """
+    # Collect final cum_return per (ticker, run_id)
+    final_returns: Dict[tuple, float] = {}
+    final_sharpes: Dict[tuple, float] = {}
+
+    # 1. Read forced liquidation files (these have the true final cum_return)
+    for path in sorted(folder.rglob("*_forced_liquidation_*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ticker = str(payload.get("stock_id", ""))
+        run_id = int(payload.get("experiment_id", 0))
+        key = (ticker, run_id)
+        final_returns[key] = float(payload.get("cum_return", 0.0))
+        final_sharpes[key] = float(payload.get("sharpe_12m", 0.0))
+
+    # 2. For tickers without forced liquidation, use last manager_decision
+    latest_decisions: Dict[tuple, tuple] = {}  # key -> (analysis_date, path)
+    for path in sorted(folder.rglob("*_manager_decision_*.json")):
+        if "forced" in path.name:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ticker = str(payload.get("stock_id", ""))
+        run_id = int(payload.get("experiment_id", 0))
+        a_date = str(payload.get("analysis_date", ""))
+        key = (ticker, run_id)
+        current = latest_decisions.get(key)
+        if current is None or a_date >= current[0]:
+            latest_decisions[key] = (a_date, path)
+
+    for key, (_, path) in latest_decisions.items():
+        if key in final_returns:
+            continue  # already have forced liquidation data
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        final_returns[key] = float(payload.get("cum_return", 0.0))
+        final_sharpes[key] = float(payload.get("sharpe_12m", 0.0))
+
+    if not final_returns:
+        return {
+            "mean_cum_return": float("nan"),
+            "mean_sharpe_12m": float("nan"),
+            "n_tickers_traded": 0,
+            "per_ticker_cum_returns": {},
+        }
+
+    # Aggregate per-ticker (average across runs for the same ticker)
+    from collections import defaultdict
+    by_ticker: Dict[str, list] = defaultdict(list)
+    sharpe_by_ticker: Dict[str, list] = defaultdict(list)
+    for (ticker, run_id), cum_ret in final_returns.items():
+        by_ticker[ticker].append(cum_ret)
+        sharpe_by_ticker[ticker].append(final_sharpes.get((ticker, run_id), 0.0))
+
+    per_ticker = {t: float(np.mean(rets)) for t, rets in by_ticker.items()}
+    per_ticker_sharpe = {t: float(np.mean(s)) for t, s in sharpe_by_ticker.items()}
+
+    all_returns = list(per_ticker.values())
+    all_sharpes = list(per_ticker_sharpe.values())
+
+    return {
+        "mean_cum_return": float(np.mean(all_returns)) if all_returns else float("nan"),
+        "mean_sharpe_12m": float(np.mean(all_sharpes)) if all_sharpes else float("nan"),
+        "n_tickers_traded": len(per_ticker),
+        "per_ticker_cum_returns": per_ticker,
+        "per_ticker_sharpes": per_ticker_sharpe,
+    }
 
 
 def _nmae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -586,7 +778,8 @@ def evaluate_table2(
     """
     Build Table-2 style rows:
       ticker, analysis_date, run_id, indicator, predicted, gold, source, gold_date,
-      capture_date, units, normalised_error, abs_pct_error, zero_penalty
+      capture_date, units, normalised_error, abs_pct_error, zero_penalty,
+      and manager P/L fields when available.
     """
     preds = _load_pred_outputs(folder=pred_folder)
     if not preds:
@@ -595,6 +788,7 @@ def evaluate_table2(
     gold_long = _load_gold_benchmark_long(gold_benchmark_csv=gold_benchmark_csv)
     if gold_long.empty:
         return pd.DataFrame()
+    manager_pnl = _load_manager_decision_pnl(folder=pred_folder)
 
     keys = _indicator_keys()
     rows = []
@@ -608,6 +802,7 @@ def evaluate_table2(
                 continue
 
         target_date = fixed_date if fixed_date else analysis_date
+        pnl = manager_pnl.get((ticker, run_id, analysis_date))
         for indicator in keys:
             pred_value = float(pred_map.get(indicator, 0.0))
             gold_value, source, gold_date, capture_date, units = _pick_gold_row(
@@ -640,6 +835,13 @@ def evaluate_table2(
                     "output_tokens": usage["output_tokens"],
                     "total_tokens": usage["total_tokens"],
                     "requests": usage["requests"],
+                    "recommendation": (pnl or {}).get("recommendation"),
+                    "signal_action": (pnl or {}).get("signal_action"),
+                    "trade_return_on_signal": (pnl or {}).get("trade_return_on_signal", np.nan),
+                    "strategy_return": (pnl or {}).get("strategy_return", np.nan),
+                    "cum_return": (pnl or {}).get("cum_return", np.nan),
+                    "sharpe_12m": (pnl or {}).get("sharpe_12m", np.nan),
+                    "pnl_available": int((pnl or {}).get("pnl_available", 0)),
                 }
             )
 
@@ -803,72 +1005,80 @@ def _paper_metric_summary(df: pd.DataFrame) -> Dict[str, float]:
 
 def evaluate_folder(pred_folder: Path, gold_csv: Path) -> pd.DataFrame:
     """
-    Evaluate a Thiago-style experiment folder against a gold CSV containing indicator columns.
+    Evaluate a experiment folder against a gold benchmark CSV.
+
+    Supports both long-format ROIC.ai CSVs (ticker, date, indicator, gold_value)
+    and wide-format CSVs (ticker, date, <indicator columns>).
+
+    Only indicators present in the gold CSV are scored.  This avoids the
+    previous bug where missing indicator columns were defaulted to 0.0,
+    corrupting NMAE and PenaltyRate for 31 of 32 indicators.
     """
-    gold = pd.read_csv(gold_csv, low_memory=False)
-    if "ticker" not in gold.columns or "date" not in gold.columns:
-        raise ValueError("gold_csv must contain columns: ticker, date")
+    gold_long = _load_gold_benchmark_long(gold_benchmark_csv=gold_csv)
+    manager_pnl = _load_manager_decision_pnl(folder=pred_folder)
 
-    gold["date"] = pd.to_datetime(gold["date"], errors="coerce")
-    gold = gold.dropna(subset=["date"]).copy()
-    gold["ticker"] = gold["ticker"].astype(str).str.upper().str.strip()
-
-    expected_cols = [str(i) for i in Indicator]
-    for c in expected_cols:
-        if c not in gold.columns:
-            gold[c] = 0.0
-        gold[c] = pd.to_numeric(gold[c], errors="coerce").fillna(0.0)
-    gold = gold.sort_values(["ticker", "date"]).reset_index(drop=True)
-    gold_by_ticker = {t: df for t, df in gold.groupby("ticker")}
+    # Build a lookup:  (ticker, date) -> {indicator: gold_value}
+    gold_lookup: Dict[str, Dict[str, float]] = {}
+    for (ticker, date_val), g in gold_long.groupby(["ticker", "date"]):
+        gold_lookup[str(ticker)] = {}
+        for _, row in g.iterrows():
+            gold_lookup[str(ticker)][str(row["indicator"])] = float(row["gold_value"])
 
     preds = _load_pred_outputs(folder=pred_folder)
 
     rows = []
     for ticker, run_id, analysis_date, pred_map, usage in preds:
-        ticker_gold = gold_by_ticker.get(ticker)
-        if ticker_gold is None or ticker_gold.empty:
+        gold_values = gold_lookup.get(ticker)
+        if not gold_values:
+            continue
+        pnl = manager_pnl.get((ticker, run_id, analysis_date))
+
+        # Score only indicators that have gold values
+        keys_with_gold = [k for k in _indicator_keys() if k in gold_values]
+        if not keys_with_gold:
             continue
 
-        if analysis_date:
-            cutoff = pd.to_datetime(analysis_date, errors="coerce")
-            if pd.isna(cutoff):
-                chosen = ticker_gold.iloc[-1]
-            else:
-                eligible = ticker_gold[ticker_gold["date"] <= cutoff]
-                chosen = eligible.iloc[-1] if not eligible.empty else ticker_gold.iloc[-1]
-        else:
-            chosen = ticker_gold.iloc[-1]
+        yt = np.array([float(gold_values[k]) for k in keys_with_gold], dtype=float)
+        yp = np.array([float(pred_map.get(k, 0.0)) for k in keys_with_gold], dtype=float)
 
-        gold_values = {c: float(chosen[c]) for c in expected_cols}
-        nmae, penalty_rate, s = score_components_one(y_true=gold_values, y_pred=pred_map)
+        nmae_val = _nmae(y_true=yt, y_pred=yp)
+        penalty_val = _penalty_rate(y_true=yt, y_pred=yp)
+        s = _score(nmae_value=nmae_val, penalty_rate_value=penalty_val, alpha=ALPHA)
+
         rows.append(
             {
                 "ticker": ticker,
                 "run_id": run_id,
                 "analysis_date": analysis_date,
-                "nmae": nmae,
-                "penalty_rate": penalty_rate,
+                "nmae": nmae_val,
+                "penalty_rate": penalty_val,
                 "score_one": s,
                 "score": s,
+                "n_scored_indicators": len(keys_with_gold),
                 "tokens_per_analysis": usage["total_tokens"],
                 "total_tokens": usage["total_tokens"],
                 "input_tokens": usage["input_tokens"],
                 "output_tokens": usage["output_tokens"],
                 "requests": usage["requests"],
+                "recommendation": (pnl or {}).get("recommendation"),
+                "signal_action": (pnl or {}).get("signal_action"),
+                "trade_return_on_signal": (pnl or {}).get("trade_return_on_signal", np.nan),
+                "strategy_return": (pnl or {}).get("strategy_return", np.nan),
+                "cum_return": (pnl or {}).get("cum_return", np.nan),
+                "sharpe_12m": (pnl or {}).get("sharpe_12m", np.nan),
+                "pnl_available": int((pnl or {}).get("pnl_available", 0)),
             }
         )
 
     df = pd.DataFrame(rows)
-    if df.empty:
-        return df
-
     return df
 
 
 def summarise_experiment(root_results: Path, gold_csv: Path) -> pd.DataFrame:
     """
-    Walk the results folder and summarise across models / architectures / reflection flags.
-    Returns a table like the paper’s Table 1.
+    Walk the results folder and summarise across models / architectures /
+    reflection flags.  Returns a table like the paper’s Table 1, now
+    including portfolio P&L metrics (mean_cum_return, mean_sharpe_12m).
     """
     summaries = []
 
@@ -883,6 +1093,7 @@ def summarise_experiment(root_results: Path, gold_csv: Path) -> pd.DataFrame:
                     continue
                 paper = _paper_metric_summary(df=df)
                 rec_counts = _manager_recommendation_counts(folder=folder)
+                pnl = _portfolio_pnl_summary(folder=folder)
                 summaries.append(
                     {
                         "model": model,
@@ -897,6 +1108,10 @@ def summarise_experiment(root_results: Path, gold_csv: Path) -> pd.DataFrame:
                         "mean_penalty_rate": paper["mean_penalty_rate"],
                         "mean_score_one": paper["mean_score_one"],
                         "mean_score": paper["mean_score_one"],
+                        # Portfolio P&L metrics
+                        "mean_cum_return": pnl["mean_cum_return"],
+                        "mean_sharpe_12m": pnl["mean_sharpe_12m"],
+                        "n_tickers_traded": int(pnl["n_tickers_traded"]),
                         "mean_tokens_per_analysis": paper["mean_tokens_per_analysis"],
                         "mean_total_tokens": paper["mean_total_tokens"],
                     }
@@ -909,8 +1124,20 @@ def summarise_experiment(root_results: Path, gold_csv: Path) -> pd.DataFrame:
 
 
 def _default_gold_csv() -> Path:
-    # .../openai-agent/experiments/final_report2025/evaluate.py -> parents[3] is Financial-D2T-Agent
-    return Path(__file__).resolve().parents[3] / "data" / "processed" / "panel" / "daily_panel_prices_returns_fundamentals.csv"
+    """Default gold CSV: ROIC.ai benchmark (long format).
+
+    Previously pointed to daily_panel_prices_returns_fundamentals.csv which
+    only had raw SEC columns (Assets, Liabilities, etc.) — NOT the 32 derived
+    indicators.  This caused 31/32 gold values to default to 0.0 and corrupt
+    all scoring metrics.  Now points to the ROIC.ai snapshot.
+    """
+    return (
+        Path(__file__).resolve().parents[3]
+        / "data"
+        / "processed"
+        / "benchmarks"
+        / "roic_gold_benchmark_2026-02-25.csv"
+    )
 
 
 def main() -> int:

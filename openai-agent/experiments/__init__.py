@@ -6,8 +6,9 @@ class Model(StrEnum):
     GPT_4_1_MINI = "gpt-4.1-mini"
     GPT_4_1_NANO = "gpt-4.1-nano"
     GPT_5_NANO = "gpt-5-nano"
+    GPT_5 = "gpt-5"
 
-    # Preferred model for this project. Change the string if your account uses a different name.
+    # Preferred default model for this project.
     GPT_5_MINI = "gpt-5-mini"
 
 

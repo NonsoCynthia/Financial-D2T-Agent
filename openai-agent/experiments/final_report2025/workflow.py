@@ -52,6 +52,7 @@ You are given the analyst indicators below:
 
 Return your response in the required schema with:
 - recommendation (Buy/Sell/Hold)
+- monthly_report
 - justification
 - target_price
 """
@@ -103,6 +104,7 @@ def init_manager_agent(experiment_metadata: ExperimentMetadata) -> Agent:
 
 
 def get_stock_report(ticker: str, end_date: str) -> str:
+    """Fetch the full SEC CompanyFacts snapshot for a ticker at a given end_date."""
     query = f"""
     SELECT CONCEPT, UNIT, VALUE_REAL, FORM, FY, FP, START_DATE, END_DATE, FILED_DATE
     FROM SEC_COMPANYFACTS
@@ -113,6 +115,11 @@ def get_stock_report(ticker: str, end_date: str) -> str:
 
 
 def get_stock_composition(ticker: str, end_date: str) -> str:
+    """Fetch shares outstanding and EPS from SEC filings for a ticker/end_date.
+
+    Only retrieves CommonStockSharesOutstanding and EarningsPerShareBasic,
+    filtered to the most recent 10-Q or 10-K filing.
+    """
     query = f"""
     SELECT CONCEPT, UNIT, VALUE_REAL, FORM, FY, FP, END_DATE, FILED_DATE
     FROM SEC_COMPANYFACTS
@@ -125,13 +132,19 @@ def get_stock_composition(ticker: str, end_date: str) -> str:
 
 
 def _to_map(result: RunResult) -> dict[str, float]:
+    """Extract indicator values from a RunResult into a plain dict.
+
+    Safely handles None values (the schema declares value as Optional[float])
+    by defaulting to 0.0.
+    """
     out = {}
     for row in result.final_output.indicators:
-        out[str(row.indicator)] = float(row.value)
+        out[str(row.indicator)] = float(row.value or 0.0)
     return out
 
 
 def _to_map_from_payload(payload: dict) -> dict[str, float]:
+    """Extract indicator values from a saved JSON payload dict."""
     out: dict[str, float] = {}
     for row in payload.get("indicators", []):
         k = str(row.get("indicator", "")).strip()
@@ -144,17 +157,36 @@ def _to_map_from_payload(payload: dict) -> dict[str, float]:
 
 def _apply_benchmark_indicator_conventions(indicators: dict[str, float]) -> dict[str, float]:
     """
-    Align key leverage definitions with benchmark conventions:
-    - NetDebt = GrossDebt - CashAndEquivalents
-    - GrossDebt_Equity = GrossDebt / ShareholdersEquity (ratio, not percent)
+    Deterministically enforce key derived metrics so they are internally
+    consistent, regardless of what the LLM returned.
+
+    Applied post-hoc after the analyst agent runs:
+      - NetDebt          = GrossDebt - CashAndEquivalents
+      - GrossDebt_Equity = GrossDebt / ShareholdersEquity  (ratio, not %)
+      - BVPS             = ShareholdersEquity / shares
+                           (shares inferred from EPS and NetProfit_TTM)
+
+    This prevents the LLM from using stale or wrong share counts for BVPS.
     """
     out = dict(indicators)
     gross_debt = float(out.get("GrossDebt", 0.0) or 0.0)
     cash = float(out.get("CashAndEquivalents", 0.0) or 0.0)
     equity = float(out.get("ShareholdersEquity", 0.0) or 0.0)
 
+    # Leverage conventions
     out["NetDebt"] = float(gross_debt - cash)
     out["GrossDebt_Equity"] = float(gross_debt / equity) if equity != 0.0 else 0.0
+
+    # BVPS = ShareholdersEquity / CommonStockSharesOutstanding
+    # Since shares aren't in the output schema, infer from:
+    #   EPS = NetProfit_TTM / shares  =>  shares = NetProfit_TTM / EPS
+    eps = float(out.get("EPS", 0.0) or 0.0)
+    net_profit_ttm = float(out.get("NetProfit_TTM", 0.0) or 0.0)
+    if eps != 0.0 and net_profit_ttm != 0.0 and equity != 0.0:
+        shares = net_profit_ttm / eps
+        if shares > 0:
+            out["BVPS"] = float(equity / shares)
+
     return out
 
 
@@ -233,24 +265,45 @@ def _manager_prompt(
     )
 
 
-def _format_previous_decision_context(previous_decision: dict | None) -> str:
+def _sanitize_prompt_text(text: str, max_chars: int = 800) -> str:
+    s = str(text or "")
+    # Keep prompt text printable and compact to reduce policy false-positives.
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > max_chars:
+        return s[:max_chars].rstrip() + " ...[truncated]"
+    return s
+
+
+def _format_previous_decision_context(
+    previous_decision: dict | None,
+    include_justification: bool = True,
+    include_monthly_report: bool = True,
+) -> str:
     if not isinstance(previous_decision, dict):
         return (
             "- previous_analysis_date: N/A\n"
             "- previous_recommendation: N/A\n"
             "- previous_target_price: N/A\n"
-            "- previous_justification: N/A"
+            "- previous_justification: N/A\n"
+            "- previous_monthly_report: N/A"
         )
 
-    prev_date = str(previous_decision.get("analysis_date", "N/A"))
-    prev_rec = str(previous_decision.get("recommendation", "N/A"))
+    prev_date = _sanitize_prompt_text(str(previous_decision.get("analysis_date", "N/A")), max_chars=32)
+    prev_rec = _sanitize_prompt_text(str(previous_decision.get("recommendation", "N/A")), max_chars=32)
     prev_target = previous_decision.get("target_price", "N/A")
-    prev_just = str(previous_decision.get("justification", "N/A"))
+    prev_just = "N/A"
+    if include_justification:
+        prev_just = _sanitize_prompt_text(str(previous_decision.get("justification", "N/A")), max_chars=700)
+    prev_report = "N/A"
+    if include_monthly_report:
+        prev_report = _sanitize_prompt_text(str(previous_decision.get("monthly_report", "N/A")), max_chars=900)
     return (
         f"- previous_analysis_date: {prev_date}\n"
         f"- previous_recommendation: {prev_rec}\n"
         f"- previous_target_price: {prev_target}\n"
-        f"- previous_justification: {prev_just}"
+        f"- previous_justification: {prev_just}\n"
+        f"- previous_monthly_report: {prev_report}"
     )
 
 
@@ -294,6 +347,29 @@ def _is_invalid_prompt_error(exc: Exception) -> bool:
         "flagged as potentially violating our usage policy",
     )
     return any(m in msg for m in markers)
+
+
+def _payload_is_invalid_prompt_fallback(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if isinstance(error, dict):
+        msg = str(error.get("error_message", "")).lower()
+        if any(
+            marker in msg
+            for marker in (
+                "invalid_prompt",
+                "invalid prompt",
+                "flagged as potentially violating our usage policy",
+            )
+        ):
+            return True
+    output = payload.get("output")
+    if isinstance(output, dict):
+        just = str(output.get("justification", "")).lower()
+        if "due api invalid_prompt" in just:
+            return True
+    return False
 
 
 def _paper_metrics_for_output(
@@ -348,7 +424,22 @@ def _apply_trade_signal(
     open_positions: list[float],
     strategy_returns: list[float],
 ) -> dict:
+    """
+    In the context of Thiago’s trading simulation, an open position is a record of an active investment in a stock that has been bought but not yet sold.
+    The system manages these positions using the following logic:
+    - Creation through "Buy" Signals: Every time the agent provides a "buy" recommendation for a specific stock, the system saves the closing price of that day into a list of open positions.
+    - Sequential Accumulation: Because the simulation is monthly, a stock can have multiple open positions if the agent recommends buying it over several consecutive months. For instance, in one example, a stock had 12 open positions from 12 different months of buying.
+    - Maintenance during "Hold": If the agent recommends a "hold" or "keep" action, the system simply maintains the current list of open positions without adding new ones or closing existing ones.
+    - Closing through "Sell" Signals: An open position is closed (liquidated) when the agent issues a "sell" recommendation. At this point, the script averages the prices of all current open positions for that stock to calculate the total trade return.
+    - Handling Empty Positions: If the agent signals "sell" for a stock where there are zero open positions, the system ignores the signal and performs no action.
+    - Final Liquidation: At the end of the simulation period (December 2025), the script automatically treats any remaining open positions as "sells" to calculate the final total return for the project.
+    - Essentially, an open position represents the active stake the agent currently holds in a company, serving as the basis for calculating profits once the stock is eventually sold.
+    """
+        
+    
+    
     out = dict(manager_output)
+    out.setdefault("monthly_report", str(out.get("justification", "") or "N/A"))
     rec_norm = _normalise_recommendation(value=out.get("recommendation", ""))
     avg_entry_before = float(np.mean(open_positions)) if open_positions else None
     n_open_before = int(len(open_positions))
@@ -493,11 +584,22 @@ def guardrail_reflection(
     result: RunResult,
     experiment_metadata: ExperimentMetadata,
 ) -> RunResult:
+    """
+    Validate analyst output and re-run the agent for any indicators that
+    are missing, zero, or fail sanity checks (including cross-validation
+    against the stock price).
+    """
     expected = {str(i) for i in Indicator}
     current = _to_map(result=result)
 
     missing = [k for k in expected if (k not in current) or (current[k] == 0.0)]
-    issues = find_sanity_issues(indicators=current)
+
+    # Pass price so sanity checks can cross-validate BVPS vs P_B, EPS vs P_E
+    try:
+        price_float = float(price)
+    except (TypeError, ValueError):
+        price_float = None
+    issues = find_sanity_issues(indicators=current, price=price_float)
     suspect = indicators_to_recompute(issues=issues)
     to_fix = sorted(set(missing + suspect))
 
@@ -617,6 +719,8 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
 
                 existing_analyst_output = _load_json(path=analyst_output_file)
                 existing_manager_payload = _load_json(path=manager_file)
+                if _payload_is_invalid_prompt_fallback(existing_manager_payload):
+                    existing_manager_payload = None
                 existing_metrics = (
                     existing_analyst_output.get("paper_metrics")
                     if isinstance(existing_analyst_output, dict)
@@ -627,6 +731,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     and existing_analyst_output is not None
                     and isinstance(existing_analyst_output.get("manager"), dict)
                     and existing_manager_payload is not None
+                    and not _payload_is_invalid_prompt_fallback(existing_manager_payload)
                     and os.path.exists(manager_decision_file)
                     and isinstance(existing_metrics, dict)
                 ):
@@ -758,6 +863,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                 previous_decision_context = _format_previous_decision_context(
                     previous_decision=previous_decision
                 )
+                manager_context_used = previous_decision_context
                 manager_payload = existing_manager_payload
                 if manager_payload is None:
                     manager_prompt = _manager_prompt(
@@ -785,30 +891,79 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     except Exception as exc:
                         if _is_invalid_prompt_error(exc):
                             print(
-                                f"Manager prompt flagged by API policy for {stock_id} on "
-                                f"{analysis_date} run {experiment_id}; saving fallback Hold decision."
+                                f"Manager prompt flagged by API policy for {stock_id} on {analysis_date} "
+                                f"run {experiment_id}; retrying with redacted previous justification."
                             )
-                            manager_payload = {
-                                "usage": {
-                                    "requests": 0,
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    "total_tokens": 0,
-                                },
-                                "steps": [],
-                                "time": 0.0,
-                                "output": {
-                                    "recommendation": "Hold",
-                                    "justification": "Manager decision unavailable due API invalid_prompt.",
-                                    "target_price": float(price),
-                                },
-                                "analysis_date": analysis_date,
-                                "error": {
-                                    "stage": "manager",
-                                    "error_type": type(exc).__name__,
-                                    "error_message": str(exc),
-                                },
-                            }
+                            redacted_context = _format_previous_decision_context(
+                                previous_decision=previous_decision,
+                                include_justification=False,
+                                include_monthly_report=False,
+                            )
+                            redacted_prompt = _manager_prompt(
+                                name=name,
+                                ticker=stock_id,
+                                cnpj=cnpj,
+                                analysis_date=analysis_date,
+                                price_str=price_str,
+                                indicators=indicators_map,
+                                previous_decision_context=redacted_context,
+                            )
+                            try:
+                                manager_start = time.time()
+                                manager_result = _run_with_turn_retry(
+                                    agent=manager_agent,
+                                    inp_data=redacted_prompt,
+                                    max_turns=experiment_metadata.max_turns,
+                                    label="manager",
+                                )
+                                manager_end = time.time()
+                                manager_payload = get_result(
+                                    result=manager_result,
+                                    elapsed_time=(manager_end - manager_start),
+                                )
+                                if isinstance(manager_payload, dict):
+                                    manager_payload["error_recovery"] = {
+                                        "recovered_from_invalid_prompt": True,
+                                        "strategy": "redacted_previous_justification",
+                                        "initial_error_message": str(exc),
+                                    }
+                                manager_context_used = redacted_context
+                            except Exception as retry_exc:
+                                if _is_invalid_prompt_error(retry_exc):
+                                    print(
+                                        f"Manager retry still flagged for {stock_id} on {analysis_date} "
+                                        f"run {experiment_id}; saving fallback Hold decision."
+                                    )
+                                    manager_payload = {
+                                        "usage": {
+                                            "requests": 0,
+                                            "input_tokens": 0,
+                                            "output_tokens": 0,
+                                            "total_tokens": 0,
+                                        },
+                                        "steps": [],
+                                        "time": 0.0,
+                                        "output": {
+                                            "recommendation": "Hold",
+                                            "monthly_report": (
+                                                "Monthly report unavailable because manager prompt was rejected "
+                                                "as invalid_prompt by the API."
+                                            ),
+                                            "justification": "Manager decision unavailable due API invalid_prompt.",
+                                            "target_price": float(price),
+                                        },
+                                        "analysis_date": analysis_date,
+                                        "error": {
+                                            "stage": "manager",
+                                            "error_type": type(retry_exc).__name__,
+                                            "error_message": str(retry_exc),
+                                            "initial_error_message": str(exc),
+                                            "recovery_strategy": "redacted_previous_justification",
+                                        },
+                                    }
+                                    manager_context_used = redacted_context
+                                else:
+                                    raise
                         else:
                             raise
 
@@ -818,7 +973,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     if not isinstance(manager_input, dict):
                         manager_input = {}
                     manager_input = dict(manager_input)
-                    manager_input["previous_decision_context"] = previous_decision_context
+                    manager_input["previous_decision_context"] = manager_context_used
                     manager_payload["manager_input"] = manager_input
 
                 manager_output = manager_payload.get("output", {}) if isinstance(manager_payload, dict) else {}

@@ -45,6 +45,7 @@ You are given the analyst indicators below:
 
 Return your response in the required schema with:
 - recommendation (Buy/Sell/Hold)
+- monthly_report
 - justification
 - target_price
 """
@@ -307,24 +308,45 @@ def _manager_prompt(
     )
 
 
-def _format_previous_decision_context(previous_decision: dict | None) -> str:
+def _sanitize_prompt_text(text: str, max_chars: int = 800) -> str:
+    s = str(text or "")
+    # Keep prompt text printable and compact to reduce policy false-positives.
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > max_chars:
+        return s[:max_chars].rstrip() + " ...[truncated]"
+    return s
+
+
+def _format_previous_decision_context(
+    previous_decision: dict | None,
+    include_justification: bool = True,
+    include_monthly_report: bool = True,
+) -> str:
     if not isinstance(previous_decision, dict):
         return (
             "- previous_analysis_date: N/A\n"
             "- previous_recommendation: N/A\n"
             "- previous_target_price: N/A\n"
-            "- previous_justification: N/A"
+            "- previous_justification: N/A\n"
+            "- previous_monthly_report: N/A"
         )
 
-    prev_date = str(previous_decision.get("analysis_date", "N/A"))
-    prev_rec = str(previous_decision.get("recommendation", "N/A"))
+    prev_date = _sanitize_prompt_text(str(previous_decision.get("analysis_date", "N/A")), max_chars=32)
+    prev_rec = _sanitize_prompt_text(str(previous_decision.get("recommendation", "N/A")), max_chars=32)
     prev_target = previous_decision.get("target_price", "N/A")
-    prev_just = str(previous_decision.get("justification", "N/A"))
+    prev_just = "N/A"
+    if include_justification:
+        prev_just = _sanitize_prompt_text(str(previous_decision.get("justification", "N/A")), max_chars=700)
+    prev_report = "N/A"
+    if include_monthly_report:
+        prev_report = _sanitize_prompt_text(str(previous_decision.get("monthly_report", "N/A")), max_chars=900)
     return (
         f"- previous_analysis_date: {prev_date}\n"
         f"- previous_recommendation: {prev_rec}\n"
         f"- previous_target_price: {prev_target}\n"
-        f"- previous_justification: {prev_just}"
+        f"- previous_justification: {prev_just}\n"
+        f"- previous_monthly_report: {prev_report}"
     )
 
 
@@ -368,6 +390,29 @@ def _is_invalid_prompt_error(exc: Exception) -> bool:
         "flagged as potentially violating our usage policy",
     )
     return any(m in msg for m in markers)
+
+
+def _payload_is_invalid_prompt_fallback(payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if isinstance(error, dict):
+        msg = str(error.get("error_message", "")).lower()
+        if any(
+            marker in msg
+            for marker in (
+                "invalid_prompt",
+                "invalid prompt",
+                "flagged as potentially violating our usage policy",
+            )
+        ):
+            return True
+    output = payload.get("output")
+    if isinstance(output, dict):
+        just = str(output.get("justification", "")).lower()
+        if "due api invalid_prompt" in just:
+            return True
+    return False
 
 
 def _paper_metrics_for_output(
@@ -429,6 +474,7 @@ def _apply_trade_signal(
     - HOLD/other keeps current open positions.
     """
     out = dict(manager_output)
+    out.setdefault("monthly_report", str(out.get("justification", "") or "N/A"))
     rec_norm = _normalise_recommendation(value=out.get("recommendation", ""))
     avg_entry_before = float(np.mean(open_positions)) if open_positions else None
     n_open_before = int(len(open_positions))
@@ -621,6 +667,8 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
 
                 existing_analyst_output = _load_json(path=analyst_output_file)
                 existing_manager_payload = _load_json(path=manager_file)
+                if _payload_is_invalid_prompt_fallback(existing_manager_payload):
+                    existing_manager_payload = None
                 existing_metrics = (
                     existing_analyst_output.get("paper_metrics")
                     if isinstance(existing_analyst_output, dict)
@@ -631,6 +679,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     and existing_analyst_output is not None
                     and isinstance(existing_analyst_output.get("manager"), dict)
                     and existing_manager_payload is not None
+                    and not _payload_is_invalid_prompt_fallback(existing_manager_payload)
                     and os.path.exists(manager_decision_file)
                     and isinstance(existing_metrics, dict)
                 ):
@@ -753,6 +802,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                 previous_decision_context = _format_previous_decision_context(
                     previous_decision=previous_decision
                 )
+                manager_context_used = previous_decision_context
                 manager_payload = existing_manager_payload
                 if manager_payload is None:
                     manager_prompt = _manager_prompt(
@@ -780,30 +830,79 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     except Exception as exc:
                         if _is_invalid_prompt_error(exc):
                             print(
-                                f"Manager prompt flagged by API policy for {stock_id} on "
-                                f"{analysis_date} run {experiment_id}; saving fallback Hold decision."
+                                f"Manager prompt flagged by API policy for {stock_id} on {analysis_date} "
+                                f"run {experiment_id}; retrying with redacted previous justification."
                             )
-                            manager_payload = {
-                                "usage": {
-                                    "requests": 0,
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    "total_tokens": 0,
-                                },
-                                "steps": [],
-                                "time": 0.0,
-                                "output": {
-                                    "recommendation": "Hold",
-                                    "justification": "Manager decision unavailable due API invalid_prompt.",
-                                    "target_price": float(price),
-                                },
-                                "analysis_date": analysis_date,
-                                "error": {
-                                    "stage": "manager",
-                                    "error_type": type(exc).__name__,
-                                    "error_message": str(exc),
-                                },
-                            }
+                            redacted_context = _format_previous_decision_context(
+                                previous_decision=previous_decision,
+                                include_justification=False,
+                                include_monthly_report=False,
+                            )
+                            redacted_prompt = _manager_prompt(
+                                name=name,
+                                ticker=stock_id,
+                                cnpj=cnpj,
+                                analysis_date=analysis_date,
+                                price_str=price_str,
+                                indicators=indicators_map,
+                                previous_decision_context=redacted_context,
+                            )
+                            try:
+                                manager_start = time.time()
+                                manager_result = _run_with_turn_retry(
+                                    agent=manager_agent,
+                                    inp_data=redacted_prompt,
+                                    max_turns=experiment_metadata.max_turns,
+                                    label="manager",
+                                )
+                                manager_end = time.time()
+                                manager_payload = get_result(
+                                    result=manager_result,
+                                    elapsed_time=(manager_end - manager_start),
+                                )
+                                if isinstance(manager_payload, dict):
+                                    manager_payload["error_recovery"] = {
+                                        "recovered_from_invalid_prompt": True,
+                                        "strategy": "redacted_previous_justification",
+                                        "initial_error_message": str(exc),
+                                    }
+                                manager_context_used = redacted_context
+                            except Exception as retry_exc:
+                                if _is_invalid_prompt_error(retry_exc):
+                                    print(
+                                        f"Manager retry still flagged for {stock_id} on {analysis_date} "
+                                        f"run {experiment_id}; saving fallback Hold decision."
+                                    )
+                                    manager_payload = {
+                                        "usage": {
+                                            "requests": 0,
+                                            "input_tokens": 0,
+                                            "output_tokens": 0,
+                                            "total_tokens": 0,
+                                        },
+                                        "steps": [],
+                                        "time": 0.0,
+                                        "output": {
+                                            "recommendation": "Hold",
+                                            "monthly_report": (
+                                                "Monthly report unavailable because manager prompt was rejected "
+                                                "as invalid_prompt by the API."
+                                            ),
+                                            "justification": "Manager decision unavailable due API invalid_prompt.",
+                                            "target_price": float(price),
+                                        },
+                                        "analysis_date": analysis_date,
+                                        "error": {
+                                            "stage": "manager",
+                                            "error_type": type(retry_exc).__name__,
+                                            "error_message": str(retry_exc),
+                                            "initial_error_message": str(exc),
+                                            "recovery_strategy": "redacted_previous_justification",
+                                        },
+                                    }
+                                    manager_context_used = redacted_context
+                                else:
+                                    raise
                         else:
                             raise
 
@@ -813,7 +912,7 @@ def run(experiment_metadata: ExperimentMetadata, n_times: int = 3):
                     if not isinstance(manager_input, dict):
                         manager_input = {}
                     manager_input = dict(manager_input)
-                    manager_input["previous_decision_context"] = previous_decision_context
+                    manager_input["previous_decision_context"] = manager_context_used
                     manager_payload["manager_input"] = manager_input
 
                 manager_output = manager_payload.get("output", {}) if isinstance(manager_payload, dict) else {}
