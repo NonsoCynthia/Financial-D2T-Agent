@@ -6,7 +6,7 @@ from typing import List, Literal, Optional, Dict, Any
 from IPython.display import Image, display
 from langchain_core.runnables.graph_mermaid import MermaidDrawMethod
 
-from agents.llm_model import UnifiedModel, model_name
+from agents.llm_model import UnifiedModel, extract_text_output, model_name, model_label_from_config
 from agents.utilities.token_tracker import token_tracker, track_response
 
 from load_data import (
@@ -21,6 +21,9 @@ from agents.agent_prompts import (
 )
 from agents.agents_modules.workflow import (
     build_agent_workflow,
+    build_agent_workflow_no_guardrail_no_finalizer,
+    build_agent_workflow_no_orchestrator_no_finalizer,
+    build_agent_workflow_no_orchestrator_no_guardrail_no_finalizer,
     build_agent_workflow_unified,
 )
 
@@ -28,6 +31,9 @@ Language = Literal["en", "ga"]
 WorkflowName = Literal[
     "default",
     "unified_worker",
+    "no_orchestrator_no_guardrail_no_finalizer",
+    "no_orchestrator_no_finalizer",
+    "no_guardrail_no_finalizer",
 ]
 
 LEGACY_INPUT_PROMPT = """You are an agent designed to generate text from structured data.
@@ -44,7 +50,7 @@ DEFAULT_AGENT_MODEL_OVERRIDES: Dict[str, str] = {
     "content ordering": "gpt-5",
     "text structuring": "gpt-5",
     "surface realization": "gpt-5",
-    "guardrail": "gpt-5.4-mini",      # acceptable, monitor for missed errors
+    "guardrail": "gpt-5",      # acceptable, monitor for missed errors: gpt-5.4-mini
     "finalizer": "gpt-5-mini",        # fine for copy-editing
     "unified_worker": "gpt-5",
 }
@@ -54,7 +60,7 @@ DEFAULT_AGENT_REASONING_EFFORT_OVERRIDES: Dict[str, Optional[str]] = {
     "content ordering": "high",
     "text structuring": "high",
     "surface realization": "high",
-    "guardrail": "medium",            # added: needs careful cross-referencing
+    "guardrail": "high",            # added: needs careful cross-referencing
     "finalizer": None,                # fine as is
     "unified_worker": "high",         # added: single agent doing all three tasks
 }
@@ -66,52 +72,8 @@ class _SafeFormatDict(dict):
         return "{" + key + "}"
 
 
-def _extract_text_segments(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        segments: list[str] = []
-        for item in value:
-            segments.extend(_extract_text_segments(item))
-        return segments
-    if isinstance(value, dict):
-        if value.get("type") == "reasoning":
-            return []
-        for key in ("text", "output_text"):
-            candidate = value.get(key)
-            if isinstance(candidate, str):
-                return [candidate]
-        if "content" in value:
-            return _extract_text_segments(value.get("content"))
-        return []
-
-    block_type = getattr(value, "type", None)
-    if block_type == "reasoning":
-        return []
-
-    text_value = getattr(value, "text", None)
-    if isinstance(text_value, str):
-        return [text_value]
-
-    output_text_value = getattr(value, "output_text", None)
-    if isinstance(output_text_value, str):
-        return [output_text_value]
-
-    nested_content = getattr(value, "content", None)
-    if nested_content is not None and nested_content is not value:
-        return _extract_text_segments(nested_content)
-
-    return []
-
-
 def extract_generated_text(raw_output: Any) -> str:
-    content = getattr(raw_output, "content", raw_output)
-    text_segments = [segment.strip() for segment in _extract_text_segments(content) if str(segment).strip()]
-    if text_segments:
-        return "\n".join(text_segments).strip()
-    return str(raw_output).strip()
+    return extract_text_output(raw_output)
 
 
 class D2TAgentExperimentRunner:
@@ -218,6 +180,31 @@ class D2TAgentExperimentRunner:
             language=self.language,
             agent_model_overrides=self.agent_model_overrides,
             agent_reasoning_overrides=self.agent_reasoning_overrides,
+        )
+
+        workflows["no_orchestrator_no_guardrail_no_finalizer"] = (
+            build_agent_workflow_no_orchestrator_no_guardrail_no_finalizer(
+                provider=self.provider,
+                language=self.language,
+                agent_model_overrides=self.agent_model_overrides,
+                agent_reasoning_overrides=self.agent_reasoning_overrides,
+            )
+        )
+        workflows["no_orchestrator_no_finalizer"] = (
+            build_agent_workflow_no_orchestrator_no_finalizer(
+                provider=self.provider,
+                language=self.language,
+                agent_model_overrides=self.agent_model_overrides,
+                agent_reasoning_overrides=self.agent_reasoning_overrides,
+            )
+        )
+        workflows["no_guardrail_no_finalizer"] = (
+            build_agent_workflow_no_guardrail_no_finalizer(
+                provider=self.provider,
+                language=self.language,
+                agent_model_overrides=self.agent_model_overrides,
+                agent_reasoning_overrides=self.agent_reasoning_overrides,
+            )
         )
 
         print("Workflows built:", list(workflows.keys()))
@@ -485,7 +472,7 @@ class D2TAgentExperimentRunner:
             initial_state,
             config={"recursion_limit": initial_state["max_iteration"]},
         )
-        state["token_usage"] = token_tracker.as_dict()
+        state["token_usage"] = token_tracker.as_dict(include_breakdown=True)
         print(token_tracker.summary_str())
 
         if save:
@@ -548,6 +535,7 @@ class D2TAgentExperimentRunner:
             base_conf["reasoning_effort"] = self.e2e_reasoning_effort
         if extra_model_kwargs:
             base_conf.update(extra_model_kwargs)
+        model_label = model_label_from_config(base_conf)
 
         # Pick the correct end to end prompt based on language
         if self.language == "ga":
@@ -561,7 +549,7 @@ class D2TAgentExperimentRunner:
         # Invoke the model
         token_tracker.reset()
         raw_output = llm.invoke({"input": query})
-        track_response(raw_output)
+        track_response(raw_output, agent_name="e2e", model_name=model_label)
         print(token_tracker.summary_str())
         generated_text = extract_generated_text(raw_output)
 
@@ -571,7 +559,7 @@ class D2TAgentExperimentRunner:
             "data": data,
             "sample_metadata": sample_meta,
             "raw_output": raw_output,
-            "token_usage": token_tracker.as_dict(),
+            "token_usage": token_tracker.as_dict(include_breakdown=True),
         }
 
     def run_month(

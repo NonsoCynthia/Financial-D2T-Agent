@@ -9,7 +9,7 @@ Description:
 
 from langchain_classic.agents import AgentExecutor
 from agents.utilities.utils import ExecutionState, AgentStepOutput
-from agents.llm_model import UnifiedModel, resolve_model_config
+from agents.llm_model import UnifiedModel, extract_text_output, resolve_model_config, model_label_from_config
 from agents.agent_prompts import FINALIZER_PROMPT, FINALIZER_INPUT
 from agents.utilities.token_tracker import track_response
 
@@ -32,10 +32,17 @@ class TaskFinalizer:
             temperature=0.0,
             reasoning_effort=reasoning_effort,
         )
-        return UnifiedModel(provider=provider, **cfg).model_(FINALIZER_PROMPT)
+        chain = UnifiedModel(provider=provider, **cfg).model_(FINALIZER_PROMPT)
+        try:
+            setattr(chain, "_token_model_name", model_label_from_config(cfg))
+        except Exception:
+            pass
+        return chain
 
     @classmethod
     def compile(cls, executor: AgentExecutor):
+        model_name = str(getattr(executor, "_token_model_name", "") or "").strip()
+
         def run(state: ExecutionState):
             history = state.get("history_of_steps", []) or []
             sample_meta = state.get("sample_metadata", {}) or {}
@@ -97,9 +104,8 @@ class TaskFinalizer:
                 )
             else:
                 raw = executor.invoke({"input": final_input})
-                track_response(raw)
-                content = getattr(raw, "content", raw)
-                reply = str(content).strip()
+                track_response(raw, agent_name="finalizer", model_name=model_name)
+                reply = extract_text_output(raw)
 
                 # Normalise in case the model includes a prefix
                 prefix = "final answer:"

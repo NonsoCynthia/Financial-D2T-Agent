@@ -53,4 +53,4 @@ class ExecutionState(TypedDict, total=False):  # set total=False to make all key
     passed_stages: List[str]                          # Stages explicitly approved by guardrail
     closed_stages: List[str]                          # Stages passed or exhausted and no longer reopenable
     response: str                                     # Optional routing/status signal
-    token_usage: Dict[str, int]                       # Accumulated {input_tokens, output_tokens, total_tokens}
+    token_usage: Dict[str, Any]                       # Accumulated totals plus optional per-agent breakdown

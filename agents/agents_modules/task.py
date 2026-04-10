@@ -18,7 +18,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from agents.utilities.utils import ExecutionState, AgentStepOutput
 from agents.agent_prompts import WORKER_SYSTEM_PROMPT, WORKER_HUMAN_PROMPT
-from agents.llm_model import UnifiedModel, resolve_model_config
+from agents.llm_model import UnifiedModel, extract_text_output, resolve_model_config, model_label_from_config
 from agents.agent_prompts import (
     UNIFIED_WORKER_PROMPT_EN,
     UNIFIED_WORKER_PROMPT_GA,
@@ -47,6 +47,7 @@ class UnifiedTaskWorker:
             temperature=0.0,
             reasoning_effort=reasoning_effort,
         )
+        model_label = model_label_from_config(params)
         model = UnifiedModel(provider=provider, **params).raw_model()
 
         # Choose unified prompt for language
@@ -74,7 +75,7 @@ class UnifiedTaskWorker:
                 ]
             ).partial(output_format="text")
 
-            return AgentExecutor(
+            executor = AgentExecutor(
                 agent=create_json_chat_agent(model, tools, prompt),
                 tools=tools,
                 verbose=True,
@@ -82,6 +83,11 @@ class UnifiedTaskWorker:
                 handle_parsing_errors=_handle_parsing_errors,
                 return_result_steps=True,
             )
+            try:
+                setattr(executor, "_token_model_name", model_label)
+            except Exception:
+                pass
+            return executor
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -89,7 +95,12 @@ class UnifiedTaskWorker:
                 ("human", "{input}"),
             ]
         )
-        return prompt | model
+        chain = prompt | model
+        try:
+            setattr(chain, "_token_model_name", model_label)
+        except Exception:
+            pass
+        return chain
 
     @classmethod
     def execute(cls, agent: AgentExecutor, language: str = "en"):
@@ -235,8 +246,12 @@ class UnifiedTaskWorker:
             history = state.get("history_of_steps", []) or []
 
             task_name, worker_input = build_task_input(state)
+            model_name = str(getattr(agent, "_token_model_name", "") or "").strip()
 
-            out = agent.invoke({"input": worker_input}, config={"callbacks": [token_tracking_callback()]})
+            out = agent.invoke(
+                {"input": worker_input},
+                config={"callbacks": [token_tracking_callback(agent_name=task_name, model_name=model_name)]},
+            )
 
             if isinstance(out, dict):
                 raw_output = out.get("output", out)
@@ -247,10 +262,10 @@ class UnifiedTaskWorker:
                 elif "action_input" in out:
                     text = out["action_input"]
                 else:
-                    text = getattr(raw_output, "content", str(raw_output))
+                    text = extract_text_output(raw_output)
                 tool_steps = out.get("result_steps", [])
             else:
-                text = getattr(out, "content", str(out))
+                text = extract_text_output(out)
                 tool_steps = []
 
             history.append(

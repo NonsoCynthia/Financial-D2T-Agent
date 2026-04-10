@@ -39,6 +39,15 @@ WORKFLOW (--workflow)
                    finalizer.  Produces the most thorough output.  (default)
   unified_worker   Same orchestrator flow but a single unified worker handles
                    all three stages.
+  no_orchestrator_no_guardrail_no_finalizer
+                   Fixed CO -> TS -> SR worker chain only. No orchestrator,
+                   guardrail, or finalizer.
+  no_orchestrator_no_finalizer
+                   Fixed CO -> guardrail -> TS -> guardrail -> SR -> guardrail.
+                   No orchestrator or finalizer.
+  no_guardrail_no_finalizer
+                   Orchestrator plus specialized workers, but no guardrail or
+                   finalizer.
   e2e              Single LLM call — no multi-agent stages.  Fastest, but
                    less structured.
 
@@ -191,16 +200,22 @@ exec "${PYTHON_BIN}" "${RUNNER_PY}" "${ARGS[@]}"
 #   ./run_nlg.sh --list-samples --source-model gpt-5-mini --catalog-limit 5
 #
 # --- Step 2a: Run a SINGLE month (default multi-agent pipeline) ---
-# ./run_nlg.sh --workflow default --source-model gpt-5-mini --analysis-date 2025-01-31
-# ./run_nlg.sh --workflow default --source-model gpt-5-mini --source-no-reflection --analysis-date 2025-01-31
-# ./run_nlg.sh --workflow default --source-model gpt-5-mini --source-reflection --analysis-date 2025-01-31 
+# ./run_nlg.sh --workflow default --source-model gpt-5 --analysis-date 2025-01-31
+# ./run_nlg.sh --workflow default --source-model gpt-5 --source-no-reflection --analysis-date 2025-01-31
+# ./run_nlg.sh --workflow default --source-model gpt-5 --source-reflection --analysis-date 2025-01-31 
 #
 # --- Step 2b: Run a SINGLE month (e2e single-shot generation) ---
 #   ./run_nlg.sh --workflow e2e --source-model gpt-5-mini --analysis-date 2025-01-31
 #
+# --- Step 2c: Run ablation studies ---
+#   ./run_nlg.sh --workflow no_orchestrator_no_guardrail_no_finalizer --source-model gpt-5 --source-reflection --analysis-date 2025-01-31
+#   ./run_nlg.sh --workflow no_orchestrator_no_finalizer --source-model gpt-5 --source-reflection --sequence --analysis-date 2025-01-31
+#   ./run_nlg.sh --workflow no_guardrail_no_finalizer --source-model gpt-5 --source-reflection --sequence --analysis-date 2025-01-31
+#
 # --- Step 3: Run ALL months in sequence (previous month auto-chains) ---
-#   ./run_nlg.sh --workflow default --source-model gpt-5-mini --sequence
-#   ./run_nlg.sh --workflow e2e --source-model gpt-5 --sequence --source-reflection
+# ./run_nlg.sh --workflow default --source-model gpt-5 --sequence
+# ./run_nlg.sh --workflow default --source-model gpt-5 --sequence --source-reflection
+# ./run_nlg.sh --workflow e2e --source-model gpt-5 --sequence --source-reflection
 #
 # --- Use a different NLG model (e.g. gpt-5-mini instead of gpt-5) ---
 #   ./run_nlg.sh --workflow default --source-model gpt-5-mini \
@@ -230,3 +245,18 @@ exec "${PYTHON_BIN}" "${RUNNER_PY}" "${ARGS[@]}"
 #   ./run_nlg.sh --workflow default --source-model gpt-5-mini \
 #                --analysis-date 2025-01-31 --language ga
 # ===========================================================================
+# Completed 14 sequence step(s).
+# - 2025-01-31: multi_stock_2025-01-31
+# - 2025-02-28: multi_stock_2025-02-28
+# - 2025-03-31: multi_stock_2025-03-31
+# - 2025-04-30: multi_stock_2025-04-30
+# - 2025-05-31: multi_stock_2025-05-31
+# - 2025-06-30: multi_stock_2025-06-30
+# - 2025-07-31: multi_stock_2025-07-31
+# - 2025-08-31: multi_stock_2025-08-31
+# - 2025-09-30: multi_stock_2025-09-30
+# - 2025-10-31: multi_stock_2025-10-31
+# - 2025-11-30: multi_stock_2025-11-30
+# - 2025-12-31: multi_stock_2025-12-31
+# - 2026-01-31: multi_stock_2026-01-31
+# - 2026-02-25: multi_stock_2026-02-25

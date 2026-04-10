@@ -128,6 +128,59 @@ def normalize_reasoning_effort(reasoning_effort: Optional[str]) -> Optional[str]
         )
     return normalized
 
+
+def _extract_text_segments(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        segments: list[str] = []
+        for item in value:
+            segments.extend(_extract_text_segments(item))
+        return segments
+    if isinstance(value, dict):
+        if value.get("type") == "reasoning":
+            return []
+        for key in ("text", "output_text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return [candidate]
+        if "content" in value:
+            return _extract_text_segments(value.get("content"))
+        return []
+
+    block_type = getattr(value, "type", None)
+    if block_type == "reasoning":
+        return []
+
+    text_value = getattr(value, "text", None)
+    if isinstance(text_value, str):
+        return [text_value]
+
+    output_text_value = getattr(value, "output_text", None)
+    if isinstance(output_text_value, str):
+        return [output_text_value]
+
+    nested_content = getattr(value, "content", None)
+    if nested_content is not None and nested_content is not value:
+        return _extract_text_segments(nested_content)
+
+    return []
+
+
+def extract_text_output(raw_output: Any) -> str:
+    content = getattr(raw_output, "content", raw_output)
+    text_segments = [segment.strip() for segment in _extract_text_segments(content) if str(segment).strip()]
+    if text_segments:
+        return "\n".join(text_segments).strip()
+    return str(raw_output).strip()
+
+
+def model_label_from_config(conf: Dict[str, Any]) -> str:
+    model_label = conf.get("model_name") or conf.get("model_id") or ""
+    return str(model_label).strip()
+
 class ChatOpenAINoStop(ChatOpenAI):
     """
     Wrapper around ChatOpenAI that ignores any `stop` parameter coming from

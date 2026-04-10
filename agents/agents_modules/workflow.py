@@ -43,6 +43,11 @@ WORKER_ROLES_GA: Dict[str, str] = {
 
 # Backwards compatible default
 WORKER_ROLES = WORKER_ROLES_EN
+EXPECTED_WORKER_ORDER: List[str] = [
+    "content ordering",
+    "text structuring",
+    "surface realization",
+]
 
 
 def get_worker_roles(language: LanguageCode) -> Dict[str, str]:
@@ -77,6 +82,7 @@ def add_workers_(
     provider: str,
     worker_model_overrides: Dict[str, str] | None = None,
     worker_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+    worker_success_next_agents: Dict[str, str] | None = None,
 ) -> List[str]:
     added: List[str] = []
     for name, prompt in worker_prompts.items():
@@ -88,7 +94,17 @@ def add_workers_(
             model_name_override=(worker_model_overrides or {}).get(name),
             reasoning_effort=(worker_reasoning_overrides or {}).get(name),
         )
-        graph.add_node(name, TaskWorker.execute(model, role=name))
+        graph.add_node(
+            name,
+            TaskWorker.execute(
+                model,
+                role=name,
+                success_next_agent=(worker_success_next_agents or {}).get(
+                    name,
+                    "guardrail",
+                ),
+            ),
+        )
         added.append(name)
     return added
 
@@ -100,6 +116,7 @@ def add_workers(
     provider: str,
     worker_model_overrides: Dict[str, str] | None = None,
     worker_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+    worker_success_next_agents: Dict[str, str] | None = None,
 ) -> List[str]: 
     added: List[str] = []
     for name, prompt in worker_prompts.items():
@@ -114,7 +131,14 @@ def add_workers(
                 model_name_override=(worker_model_overrides or {}).get(name),
                 reasoning_effort=(worker_reasoning_overrides or {}).get(name),
             )
-            return TaskWorker.execute(model, role=name)(state)
+            return TaskWorker.execute(
+                model,
+                role=name,
+                success_next_agent=(worker_success_next_agents or {}).get(
+                    name,
+                    "guardrail",
+                ),
+            )(state)
 
         graph.add_node(name, node_fn)
         added.append(name)
@@ -172,6 +196,117 @@ def worker_routing(state: ExecutionState) -> Literal["guardrail", "orchestrator"
     if next_agent == "orchestrator":
         return "orchestrator"
     return "guardrail"
+
+
+def _worker_model_overrides(
+    worker_roles: Dict[str, str],
+    agent_model_overrides: Dict[str, str] | None,
+) -> Dict[str, str]:
+    return {
+        name: model
+        for name, model in (agent_model_overrides or {}).items()
+        if name in worker_roles
+    }
+
+
+def _worker_reasoning_overrides(
+    worker_roles: Dict[str, str],
+    agent_reasoning_overrides: Dict[str, Optional[str]] | None,
+) -> Dict[str, Optional[str]]:
+    return {
+        name: effort
+        for name, effort in (agent_reasoning_overrides or {}).items()
+        if name in worker_roles
+    }
+
+
+def _add_standard_workers(
+    flow: StateGraph,
+    worker_roles: Dict[str, str],
+    provider: str,
+    agent_model_overrides: Dict[str, str] | None = None,
+    agent_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+    worker_success_next_agents: Dict[str, str] | None = None,
+) -> List[str]:
+    return add_workers_(
+        worker_roles,
+        flow,
+        [],
+        "",
+        provider,
+        worker_model_overrides=_worker_model_overrides(
+            worker_roles,
+            agent_model_overrides,
+        ),
+        worker_reasoning_overrides=_worker_reasoning_overrides(
+            worker_roles,
+            agent_reasoning_overrides,
+        ),
+        worker_success_next_agents=worker_success_next_agents,
+    )
+
+
+def _ordered_unique_stages(values: Any) -> List[str]:
+    seen = {
+        str(name).strip().lower()
+        for name in (values or [])
+        if str(name).strip()
+    }
+    return [name for name in EXPECTED_WORKER_ORDER if name in seen]
+
+
+def _latest_worker_output(state: ExecutionState) -> str:
+    history = state.get("history_of_steps", []) or []
+    preferred_order = [
+        "surface realization",
+        "text structuring",
+        "content ordering",
+    ]
+    for preferred_name in preferred_order:
+        for step in reversed(history):
+            step_name = str(getattr(step, "agent_name", "") or "").strip().lower()
+            if step_name == preferred_name:
+                return str(getattr(step, "agent_output", "") or "")
+    return str(state.get("final_response", "") or "")
+
+
+def final_response_passthrough(state: ExecutionState) -> Dict[str, Any]:
+    """
+    Terminal node for no-finalizer ablations.
+    It does not call an LLM; it exposes the latest worker output as the result.
+    """
+    return {
+        "final_response": _latest_worker_output(state),
+        "history_of_steps": state.get("history_of_steps", []) or [],
+    }
+
+
+def accept_worker_output_without_guardrail(state: ExecutionState) -> Dict[str, Any]:
+    """
+    Bookkeeping node for no-guardrail ablations.
+    It marks the latest worker stage as complete without evaluating the output.
+    """
+    last_worker = str(state.get("last_worker", "") or "").strip().lower()
+    passed_stages = _ordered_unique_stages(state.get("passed_stages", []))
+    closed_stages = _ordered_unique_stages(state.get("closed_stages", []))
+
+    if last_worker in EXPECTED_WORKER_ORDER:
+        if last_worker not in passed_stages:
+            passed_stages.append(last_worker)
+        if last_worker not in closed_stages:
+            closed_stages.append(last_worker)
+
+    return {
+        "next_agent": "orchestrator",
+        "review": "",
+        "history_of_steps": state.get("history_of_steps", []) or [],
+        "iteration_count": state.get("iteration_count", 0),
+        "max_iteration": state.get("max_iteration", 50),
+        "worker_attempts": state.get("worker_attempts", {}) or {},
+        "last_worker": last_worker,
+        "passed_stages": _ordered_unique_stages(passed_stages),
+        "closed_stages": _ordered_unique_stages(closed_stages),
+    }
 
 
 
@@ -352,7 +487,7 @@ def build_agent_workflow_unified(
 
 
 #################################################################################################################
-# Disregard the codes below for now - ablation future studies
+# The codes below are for ablation studies
 #################################################################################################################
 
 def build_agent_workflow_single_module(provider: str = "ollama", language: LanguageCode = "en",):
@@ -556,6 +691,159 @@ def build_agent_workflow_no_orchestrator(provider: str = "ollama", language: Lan
     flow.add_edge("guardrail_sr", "finalizer")
 
     flow.add_edge("finalizer", END)
+
+    return flow.compile()
+
+
+def build_agent_workflow_no_orchestrator_no_guardrail_no_finalizer(
+    provider: str = "ollama",
+    language: LanguageCode = "en",
+    agent_model_overrides: Dict[str, str] | None = None,
+    agent_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+):
+    """
+    Ablation study 1.
+    Remove orchestration, guardrail evaluation, and finalizer polishing.
+
+    Architecture:
+      content ordering -> text structuring -> surface realization -> END
+    """
+    flow = StateGraph(ExecutionState)
+    worker_roles = get_worker_roles(language)
+
+    first_role = EXPECTED_WORKER_ORDER[0]
+    flow.add_edge(START, first_role)
+    flow.set_entry_point(first_role)
+
+    _add_standard_workers(
+        flow,
+        worker_roles,
+        provider,
+        agent_model_overrides=agent_model_overrides,
+        agent_reasoning_overrides=agent_reasoning_overrides,
+        worker_success_next_agents={
+            "content ordering": "text structuring",
+            "text structuring": "surface realization",
+            "surface realization": "terminal_output",
+        },
+    )
+    flow.add_node("terminal_output", final_response_passthrough)
+
+    flow.add_edge("content ordering", "text structuring")
+    flow.add_edge("text structuring", "surface realization")
+    flow.add_edge("surface realization", "terminal_output")
+    flow.add_edge("terminal_output", END)
+
+    return flow.compile()
+
+
+def build_agent_workflow_no_orchestrator_no_finalizer(
+    provider: str = "ollama",
+    language: LanguageCode = "en",
+    agent_model_overrides: Dict[str, str] | None = None,
+    agent_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+):
+    """
+    Ablation study 2.
+    Remove the orchestrator and finalizer, but keep guardrail evaluation after
+    each fixed worker stage.
+
+    Architecture:
+      content ordering -> guardrail -> text structuring -> guardrail ->
+      surface realization -> guardrail -> END
+    """
+    flow = StateGraph(ExecutionState)
+    worker_roles = get_worker_roles(language)
+
+    first_role = EXPECTED_WORKER_ORDER[0]
+    flow.add_edge(START, first_role)
+    flow.set_entry_point(first_role)
+
+    _add_standard_workers(
+        flow,
+        worker_roles,
+        provider,
+        agent_model_overrides=agent_model_overrides,
+        agent_reasoning_overrides=agent_reasoning_overrides,
+    )
+
+    guardrail_agent = TaskGuardrail.init(
+        provider,
+        model_name_override=(agent_model_overrides or {}).get("guardrail"),
+        reasoning_effort=(agent_reasoning_overrides or {}).get("guardrail"),
+    )
+    flow.add_node("guardrail_co", TaskGuardrail.evaluate(guardrail_agent))
+    flow.add_node("guardrail_ts", TaskGuardrail.evaluate(guardrail_agent))
+    flow.add_node("guardrail_sr", TaskGuardrail.evaluate(guardrail_agent))
+    flow.add_node("terminal_output", final_response_passthrough)
+
+    flow.add_edge("content ordering", "guardrail_co")
+    flow.add_edge("guardrail_co", "text structuring")
+
+    flow.add_edge("text structuring", "guardrail_ts")
+    flow.add_edge("guardrail_ts", "surface realization")
+
+    flow.add_edge("surface realization", "guardrail_sr")
+    flow.add_edge("guardrail_sr", "terminal_output")
+    flow.add_edge("terminal_output", END)
+
+    return flow.compile()
+
+
+def build_agent_workflow_no_guardrail_no_finalizer(
+    provider: str = "ollama",
+    language: LanguageCode = "en",
+    agent_model_overrides: Dict[str, str] | None = None,
+    agent_reasoning_overrides: Dict[str, Optional[str]] | None = None,
+):
+    """
+    Ablation study 3.
+    Keep the orchestrator and specialized workers, but remove guardrail
+    evaluation and finalizer polishing.
+
+    Architecture:
+      orchestrator -> worker -> accept-without-guardrail -> orchestrator
+      ... -> terminal output -> END
+    """
+    flow = StateGraph(ExecutionState)
+    worker_roles = get_worker_roles(language)
+    workers = list(worker_roles.keys())
+
+    flow.add_edge(START, "orchestrator")
+    flow.set_entry_point("orchestrator")
+    flow.add_node(
+        "orchestrator",
+        TaskOrchestrator.execute(
+            TaskOrchestrator.init(
+                provider,
+                model_name_override=(agent_model_overrides or {}).get("orchestrator"),
+                reasoning_effort=(agent_reasoning_overrides or {}).get("orchestrator"),
+            )
+        ),
+    )
+
+    _add_standard_workers(
+        flow,
+        worker_roles,
+        provider,
+        agent_model_overrides=agent_model_overrides,
+        agent_reasoning_overrides=agent_reasoning_overrides,
+        worker_success_next_agents={
+            name: "accept_worker_output" for name in worker_roles
+        },
+    )
+    flow.add_node("accept_worker_output", accept_worker_output_without_guardrail)
+    flow.add_node("terminal_output", final_response_passthrough)
+
+    routes = {name: name for name in workers}
+    routes.update({"finish": "terminal_output"})
+    flow.add_conditional_edges("orchestrator", lambda state: state["next_agent"], routes)
+
+    for worker_name in workers:
+        flow.add_edge(worker_name, "accept_worker_output")
+
+    flow.add_edge("accept_worker_output", "orchestrator")
+    flow.add_edge("terminal_output", END)
 
     return flow.compile()
 

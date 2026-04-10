@@ -21,7 +21,14 @@ ALLOWED_NLG_RESULTS_ROOTS = (
     (PROJECT_ROOT / "results" / "final_report2025_us").resolve(),
     (PROJECT_ROOT / "results" / "final_report2025_eu").resolve(),
 )
-VALID_WORKFLOWS = ("default", "unified_worker", "e2e")
+VALID_WORKFLOWS = (
+    "default",
+    "unified_worker",
+    "no_orchestrator_no_guardrail_no_finalizer",
+    "no_orchestrator_no_finalizer",
+    "no_guardrail_no_finalizer",
+    "e2e",
+)
 VALID_LANGUAGES = ("en", "ga")
 VALID_PROVIDERS = ("openai", "ollama", "anthropic", "groq", "hf", "huggingface", "aixplain")
 VALID_DATASET_KINDS = ("auto", "financial_multi_stock_monthly")
@@ -74,6 +81,46 @@ def write_text_report(directory: Path, prefix: str, sample_slug: str, text: str)
     path = directory / f"{prefix}_{safe_slug(sample_slug)}.txt"
     path.write_text((text or "").strip() + "\n", encoding="utf-8")
     return path
+
+
+def result_paths(output_dir: Path, save_prefix: str, sample_slug: str) -> tuple[Path, Path]:
+    safe_sample_slug = safe_slug(sample_slug)
+    return (
+        output_dir / f"{save_prefix}_{safe_sample_slug}.json",
+        output_dir / f"{save_prefix}_{safe_sample_slug}.txt",
+    )
+
+
+def load_existing_report_text(
+    output_dir: Path,
+    save_prefix: str,
+    sample_slug: str,
+) -> tuple[Optional[str], Optional[Path]]:
+    json_path, text_path = result_paths(output_dir, save_prefix, sample_slug)
+
+    if json_path.is_file():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            payload = None
+        if isinstance(payload, dict):
+            report_text = (
+                payload.get("final_response")
+                or payload.get("generated_text")
+                or payload.get("report")
+            )
+            if isinstance(report_text, str) and report_text.strip():
+                return report_text.strip(), json_path
+
+    if text_path.is_file():
+        try:
+            report_text = text_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            report_text = ""
+        if report_text:
+            return report_text, text_path
+
+    return None, None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -445,6 +492,16 @@ def save_e2e_result(
     return output_dir / json_filename, text_path
 
 
+def save_workflow_text_result(
+    state: dict[str, Any],
+    output_dir: Path,
+    save_prefix: str,
+) -> Path:
+    sample_meta = state.get("sample_metadata", {}) or {}
+    sample_slug = safe_slug(str(sample_meta.get("sample_name", f"sample{sample_meta.get('sample_id', 'x')}")))
+    return write_text_report(output_dir, save_prefix, sample_slug, str(state.get("final_response", "")))
+
+
 def run_sequence(
     runner,
     args: argparse.Namespace,
@@ -470,13 +527,37 @@ def run_sequence(
         "output_dir": str(output_dir),
     }
 
-    if args.workflow == "e2e":
-        outputs: list[dict[str, Any]] = []
-        summary_rows: list[dict[str, Any]] = []
-        previous_report: Optional[str] = None
+    summary_rows: list[dict[str, Any]] = []
+    previous_report: Optional[str] = None
 
-        for sample in runner.samples:
-            sample_id = int(sample["sample_id"])
+    for sample in runner.samples:
+        sample_id = int(sample["sample_id"])
+        sample_name = str(sample.get("sample_name", f"sample{sample_id}"))
+        existing_report, existing_path = load_existing_report_text(
+            output_dir=output_dir,
+            save_prefix=save_prefix,
+            sample_slug=sample_name,
+        )
+
+        if existing_report is not None:
+            print(
+                f"Skipping sample_id={sample_id} (sample={sample_name}); "
+                f"found existing output: {existing_path}"
+            )
+            previous_report = existing_report
+            row: dict[str, Any] = {
+                "sample_id": sample_id,
+                "sample_name": sample.get("sample_name"),
+                "analysis_date": sample.get("analysis_date"),
+            }
+            if args.workflow == "e2e":
+                row["generated_text"] = existing_report
+            else:
+                row["final_response"] = existing_report
+            summary_rows.append(row)
+            continue
+
+        if args.workflow == "e2e":
             result = runner.run_end_to_end(
                 sample_id=sample_id,
                 provider=provider,
@@ -485,8 +566,6 @@ def run_sequence(
                 previous_report=previous_report,
             )
             previous_report = str(result.get("generated_text", "")).strip() or previous_report
-            outputs.append(result)
-
             sample_meta = result["sample_metadata"]
             if args.save:
                 json_path, text_path = save_e2e_result(result, output_dir, save_prefix)
@@ -502,37 +581,38 @@ def run_sequence(
                     "generated_text": result.get("generated_text", ""),
                 }
             )
-        if args.save:
-            save_result_to_json(
-                {"config": run_config, "results": summary_rows},
-                filename=f"{save_prefix}_sequence_summary.json",
-                directory=str(output_dir),
-            )
-        print(f"Completed {len(summary_rows)} sequence step(s).")
-        for row in summary_rows:
-            print(f"- {row['analysis_date']}: {row['sample_name']}")
-        return 0
+            continue
 
-    outputs = runner.run_sequence(
-        workflow=args.workflow,
-        save=args.save,
-        save_prefix=save_prefix,
-    )
+        state = runner.run_sample(
+            sample_id=sample_id,
+            workflow=args.workflow,
+            save=args.save,
+            save_prefix=save_prefix,
+            previous_report=previous_report,
+        )
+        previous_report = str(state.get("final_response", "")).strip() or previous_report
+        sample_meta = state.get("sample_metadata", {}) or sample
+        if args.save:
+            text_path = save_workflow_text_result(state, output_dir, save_prefix)
+            print(f"Saved sample_id={sample_id} text report: {text_path}")
+
+        summary_rows.append(
+            {
+                "sample_id": sample_id,
+                "analysis_date": sample_meta.get("analysis_date"),
+                "sample_name": sample_meta.get("sample_name"),
+                "final_response": state.get("final_response", ""),
+            }
+        )
+
     if args.save:
-        for row in outputs:
-            write_text_report(
-                output_dir,
-                save_prefix,
-                str(row.get("sample_name", "sample")),
-                str(row.get("final_response", "")),
-            )
         save_result_to_json(
-            {"config": run_config, "results": outputs},
+            {"config": run_config, "results": summary_rows},
             filename=f"{save_prefix}_sequence_summary.json",
             directory=str(output_dir),
         )
-    print(f"Completed {len(outputs)} sequence step(s).")
-    for row in outputs:
+    print(f"Completed {len(summary_rows)} sequence step(s).")
+    for row in summary_rows:
         print(f"- {row['analysis_date']}: {row['sample_name']}")
     return 0
 

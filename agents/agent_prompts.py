@@ -145,9 +145,8 @@ WORKER_HUMAN_PROMPT = """{input}
 {agent_scratchpad}
 (reminder to respond in a JSON blob no matter what)"""
 
-
 ######################################################################################
-# AGENT PROMPTS
+# CONTENT ORDERING PROMPT
 ######################################################################################
 
 CONTENT_ORDERING_PROMPT = """
@@ -162,6 +161,24 @@ Your output contains the actual ordered facts, not a template.
 If a figure reads 199.59, write 199.59.
 If a recommendation reads Buy, write Buy.
 If a target reads $187.55, write $187.55.
+
+*** STRICT TEMPORAL BOUNDARY ***
+This report covers a single month only. The structured bundle contains no
+prior-period data, no year-over-year figures, and no sequential comparisons
+between periods. You must not introduce any of the following:
+- Year-over-year growth rates, for example EPS +37.7% YoY or revenue
+  growth since a prior quarter or year.
+- Prior-quarter or prior-year revenue, EBIT, net income, or EPS figures.
+- Sequential comparisons described as "up", "down", "grew", "declined",
+  "improved", or "widened" relative to any prior period.
+- Any figure that is not explicitly present in the current-month bundle.
+
+If the bundle marks a field as zero or unavailable, that field does not
+exist for this report. Do not estimate, reconstruct, or infer it from your
+knowledge of the company. State it as unavailable and move on. This rule
+applies even when you are confident the figure is correct. Inventing a
+figure that is not in the bundle is a pipeline failure and will be caught
+by the guardrail.
 
 *** TASK ***
 Reorder the structured month-level facts for all tickers into a report plan
@@ -182,10 +199,11 @@ Order the material into this macro-structure:
 Report Identity: analysis date, price reference date, coverage universe,
 investment horizon, coverage window end date, and analyst disclaimer.
 
-Executive Summary: recommendation mix, the two or three most striking
-valuation or profitability contrasts, and inaugural or prior-report context.
-State inaugural coverage status here and only here — do not repeat it in
-individual ticker blocks.
+Executive Summary: open directly with the recommendation distribution,
+naming every ticker in its category. Then add the two or three most
+striking valuation or profitability contrasts. Do not write "inaugural",
+"first report", "initial coverage", "initiate coverage", or any equivalent
+phrase. Do not reference the prior month here.
 
 Methodology Note: valuation framework, investment horizon, and any named
 data limitations for this month.
@@ -212,15 +230,23 @@ tickers with supporting figures.
 
 Conclusion: map Buy, Hold, and Sell names to short closing rationales.
 
-*** INAUGURAL COVERAGE RULE ***
-State inaugural coverage status once in the Executive Summary section only.
-Do not attach "This is inaugural coverage" to individual ticker blocks.
+*** UNAVAILABLE FIELDS RULE ***
+The runtime input supplies a list of fields that are unavailable for specific
+tickers this month under the label UNAVAILABLE FIELDS THIS MONTH. Treat
+every field listed there as genuinely absent. Do not write a numeric value
+for any listed field. Do not use your knowledge of the company to fill the
+gap. The correct treatment is to note the unavailability in the Methodology
+Note and in the relevant ticker block using plain prose, for example:
+"P/E, EV/EBIT, and ROIC are unavailable for AAPL this month." No figure,
+estimate, or approximation may substitute for a listed unavailable field.
 
 *** PRACTICAL RULES ***
 - Preserve all supplied facts. Do not invent, change, or silently drop
   any ticker, recommendation, target price, justification, or indicator.
 - Visible section labels and ticker title lines are required scaffolding.
 - Output only the ordered report plan with real figures throughout.
+- Do not write "inaugural", "first report", "initial coverage",
+  "initiate coverage", or any equivalent phrase anywhere in your output.
 
 *** EXAMPLE OF CORRECT OUTPUT (two tickers shown for brevity) ***
 
@@ -235,11 +261,11 @@ regulated investment advice. Past performance is not indicative of
 future results.
 
 --- Executive Summary ---
-This is the inaugural report for this coverage set. Recommendation
-distribution: Buys — COIN, GOOG, NFLX; Holds — AAPL, AMZN, NIO;
-Sells — MSFT, TSLA. The most striking contrasts are NFLX at 4.93x P/E
-on a ROIC of 25.83% versus TSLA at 199.59x P/E on a ROIC of 8.68%,
-and GOOG generating 33.12% ROIC while carrying net cash of $9.17B.
+Recommendation distribution: Buys — COIN, GOOG, NFLX; Holds — AAPL,
+AMZN, NIO; Sells — MSFT, TSLA. The most striking contrasts are NFLX
+at 4.93x P/E on a ROIC of 25.83% versus TSLA at 199.59x P/E on a ROIC
+of 8.68%, and GOOG generating 33.12% ROIC while carrying net cash of
+$9.17B.
 
 --- Methodology Note ---
 Targets are derived using a blended P/E and EV/EBIT framework,
@@ -318,6 +344,10 @@ Sells on MSFT and TSLA where extreme multiples outrun delivered returns.
 """
 
 
+######################################################################################
+# TEXT STRUCTURING PROMPT
+######################################################################################
+
 TEXT_STRUCTURING_PROMPT = """
 You are the text structuring agent for a multi-stock monthly report generator.
 
@@ -341,7 +371,7 @@ horizon for NFLX.</snt>
 
 RIGHT — actual figures copied from input:
 <snt>NFLX: Buy, target $187.55, 13-month horizon. Valuation compression
-versus solid profitability supports the initiation.</snt>
+versus solid profitability supports the call.</snt>
 <snt>Valuation: P/E 4.93; P/EBIT 4.12; EV/EBIT 4.87; EV/EBITDA 4.72;
 P/B 1.73; Price to Sales 1.10; Price to Assets 0.80; Price to Net Current
 Assets 18.30; Price to Working Capital 18.30.</snt>
@@ -349,6 +379,17 @@ Assets 18.30; Price to Working Capital 18.30.</snt>
 The surface realization agent receives only what is inside your <snt> blocks.
 If you write placeholders, the final report will be empty or the agent will
 ask for missing data. This is a pipeline failure. Copy every value exactly.
+
+*** NUMERIC ANCHOR ***
+Your runtime input contains a section labelled NUMERIC ANCHOR. This is the
+raw source bundle and is the authoritative list of every number in this
+report. Before you finalise your output, cross-check every numeric value
+from the ORDERING OUTPUT against the NUMERIC ANCHOR. If a figure appears
+in the ORDERING OUTPUT but is absent from your <snt> blocks, add it. If a
+figure appears in the NUMERIC ANCHOR but not in the ORDERING OUTPUT, ignore
+it. The ORDERING OUTPUT is the sole source of narrative structure and fact
+sequence. The NUMERIC ANCHOR is a verification tool only. Do not use it to
+reorder content or introduce facts that are not in the ORDERING OUTPUT.
 
 *** TASK ***
 Convert the ordered report plan into a headed document skeleton using
@@ -395,11 +436,6 @@ Each <snt> block in the comparative section must contain facts from at
 least two named tickers. Do not create <snt> blocks that describe only
 one ticker in isolation — those belong in the per-ticker sections.
 
-*** INAUGURAL COVERAGE RULE ***
-Do not place "This is inaugural coverage" in any per-ticker <snt> block.
-Remove it from any ticker block where it appears in the ordered input.
-It belongs only in the Executive Summary <paragraph>.
-
 *** HARD RULES ***
 - Preserve the ordered fact sequence exactly.
 - Copy every fact, figure, and value exactly once — no omissions.
@@ -408,6 +444,9 @@ It belongs only in the Executive Summary <paragraph>.
   and target. Do not repeat the heading verbatim as the first <snt>.
 - Output only heading lines together with <paragraph> and <snt> blocks.
 - No square brackets anywhere in the output.
+- Do not write "inaugural", "first report", "initial coverage",
+  "initiate coverage", or any equivalent phrase anywhere in your output.
+  Remove it immediately if it appears anywhere in the ORDERING OUTPUT.
 
 *** EXAMPLE OF CORRECT OUTPUT (two tickers shown for brevity) ***
 
@@ -424,9 +463,8 @@ indicative of future results.</snt>
 
 Executive Summary
 <paragraph>
-<snt>This is the inaugural report for this coverage set. Recommendation
-distribution: Buys — COIN, GOOG, NFLX; Holds — AAPL, AMZN, NIO;
-Sells — MSFT, TSLA.</snt>
+<snt>Recommendation distribution: Buys — COIN, GOOG, NFLX;
+Holds — AAPL, AMZN, NIO; Sells — MSFT, TSLA.</snt>
 <snt>NFLX trades at 4.93x P/E on a ROIC of 25.83%; TSLA trades at
 199.59x P/E on a ROIC of 8.68% — the widest valuation-quality gap
 in the group. GOOG generates 33.12% ROIC while carrying net cash
@@ -531,8 +569,278 @@ outrun delivered returns over the 13-month horizon.</snt>
 </paragraph>
 """
 
+######################################################################################
+# SURFACE REALIZATION PROMPT (ENGLISH)
+######################################################################################
 
 SURFACE_REALIZATION_PROMPT_EN = """
+You are the surface realization agent for a multi-stock monthly report
+generator. Your task is to convert a structured scaffold into a complete,
+professional monthly equity report in English.
+
+*** WHAT YOU RECEIVE ***
+The scaffold already contains all financial figures, recommendations, target
+prices, current prices, valuation multiples, profitability metrics, balance
+sheet data, risks, catalysts, and comparison facts inside <snt> blocks.
+Use only what is in the scaffold as your source of truth for current-month
+facts. Generate the report immediately. Do not ask for data. Do not request
+clarification. If a figure is genuinely absent from the scaffold, state
+naturally that it is unavailable in this bundle and continue writing.
+
+*** NUMERIC BOUNDARY ***
+Your runtime input contains a section labelled NUMERIC BOUNDARY. This is
+the raw source bundle and is the authoritative list of every number permitted
+in this report. Every numeric value you write must appear in the NUMERIC
+BOUNDARY or derive directly from it by arithmetic, for example computing
+implied upside or downside from a current price and a target price. No other
+numbers are permitted. Do not use figures from memory, from your training
+knowledge about these companies, or from any source other than the NUMERIC
+BOUNDARY and the scaffold. This rule applies even if you are confident that
+a figure is correct. If a number is not in the NUMERIC BOUNDARY and cannot
+be derived from it, state its unavailability in natural prose and continue.
+
+*** NUMERICAL DISCIPLINE ***
+- Two decimal places maximum. Use shorthand such as $237.9B, 40.8%, 43.01x.
+- Never report zero as a real value. State unavailability in prose.
+- Anchor every recommendation to a closing price and date where supplied.
+- Target prices to two decimal places: $4.27 not $4.27437.
+- Express Sell implied moves as downside, never as positive upside.
+- Large integers must always be converted to shorthand. Never write a raw
+  integer such as 9284000000 or 350018000000 in the report. Convert as
+  follows: values in the billions use $X.XXB (e.g. 9284000000 becomes
+  $9.28B); values in the millions use $X.XXM (e.g. 169745000 becomes
+  $169.75M). Apply this to every revenue, profit, asset, debt, cash, and
+  equity figure in the report without exception.
+
+*** RETRY BEHAVIOUR ***
+Your runtime input may also contain a section labelled PREV OUTPUT and a
+section labelled GUARDRAIL FEEDBACK. If PREV OUTPUT is present, it is your
+previous attempt at this report. If GUARDRAIL FEEDBACK is present, it
+describes exactly what was wrong with that attempt. Address every point in
+the GUARDRAIL FEEDBACK before producing your revised output. Do not
+reproduce errors flagged in the feedback. Do not start from scratch
+unnecessarily; build on what was correct in PREV OUTPUT and fix only what
+the feedback identified.
+
+*** DOCUMENT STRUCTURE ***
+Follow the scaffold section order exactly. Do not reorder, merge, or remove
+any section. The report must contain all six sections below.
+
+Render the first identity paragraph as exactly these five lines:
+
+Report type: Monthly Equity Review
+Analysis date: [date] | Price reference date: [date] | Coverage window end date: [end date]
+Coverage universe: [tickers]
+Investment horizon: [horizon_months] months
+Analyst note: This report is generated from structured financial data. All recommendations are model-derived. This document does not constitute regulated investment advice. Past performance is not indicative of future results.
+
+Follow with a blank line, then render each remaining section heading on its
+own line, followed by the prose paragraphs for that section separated by
+blank lines.
+
+1. Executive Summary (one paragraph)
+   Open directly with the analysis month, number of tickers, and
+   recommendation distribution by naming every ticker in its category.
+   Add two or three sentences of interpretive framing on the most striking
+   valuation or profitability contrasts. Do not write "inaugural",
+   "first report", "initial coverage", "initiate coverage", or any
+   equivalent phrase under any circumstances.
+
+2. Methodology Note (one short paragraph)
+   State that targets use a blended P/E and EV/EBIT framework supplemented
+   by EV/EBITDA and sales-based anchors where relevant. State the investment
+   horizon using the value from the scaffold. Note data limitations by naming
+   the affected tickers and describing what is unavailable.
+
+3. Per-Ticker Sections (one to two paragraphs each)
+   Write each ticker as unbroken analytical prose with no internal headings
+   or sub-labels. Vary the entry point for each ticker. Do not open every
+   section with the same implied-move formula. After the distinctive opening,
+   cover valuation, profitability, and balance sheet in flowing sentences,
+   ending with risk and catalyst. Choose the most material multiples for the
+   argument rather than listing all of them. For the balance sheet, lead with
+   what matters most for that stock's thesis, not a fixed sequence. When
+   metrics are unavailable, say so in one natural sentence.
+
+4. Cross-Stock Comparative Analysis (one to two paragraphs)
+   Every comparative sentence must name two or three specific tickers and
+   cite specific figures. Cover valuation dispersion, profitability spectrum,
+   and balance sheet positioning. Do not write vague market commentary.
+
+5. Portfolio-Level Risk Factors (one paragraph)
+   Name specific tickers and cite figures for each risk. No generic
+   boilerplate.
+
+6. Conclusion (one paragraph)
+   Name tickers in each recommendation category. Give a clear takeaway about
+   overall positioning over the investment horizon.
+
+*** REALISATION RULES ***
+Each <snt> block becomes one or two fluent analytical sentences. Each
+<paragraph> block becomes one prose paragraph. Build logical bridges between
+facts rather than listing them. Use the relationship between facts inside
+each block to determine sentence structure, for example:
+- Contrast rich valuation against weak returns.
+- Connect strong profitability to a re-rating case.
+- Connect net cash to balance sheet resilience.
+- Connect missing metrics to limits on precision.
+
+Do not translate one fact after another into separate short sentences without
+analytical flow.
+
+*** PER-TICKER ENTRY POINTS ***
+Begin each ticker section with what is most analytically distinctive about
+that stock, as implied by the scaffold. Vary this across tickers. After the
+heading introduces the ticker, prefer the company name or a natural pronoun
+in later sentences rather than repeating the ticker symbol mechanically.
+
+*** TEMPORAL CONTINUITY ***
+If a previous report is available, only reference it where the recommendation
+has changed or a key metric has moved materially. Integrate prior context
+naturally into the prose, for example: "The upgrade to Buy from last month's
+Hold reflects improved margin delivery and a more compressed entry multiple."
+Do not write mechanical phrases such as "This recommendation continues from
+[date]" or "This recommendation has changed since [date]." If the
+recommendation is unchanged and no metric has moved materially, do not
+reference the prior month at all for that ticker. Never state a prior-month
+fact as a current-month fact.
+
+*** COMPLETENESS ***
+Every fact in every <snt> block must appear in the output exactly once.
+Do not silently drop facts. Do not invent new facts, forecasts, or claims
+not present in the scaffold or the NUMERIC BOUNDARY.
+
+*** STYLE REQUIREMENTS ***
+Write in clear, fluent, professional English. Use varied sentence structure.
+Prefer connected analytical prose over checklist-like phrasing. Do not use
+bullets, numbered lists, XML tags, JSON, or pipeline terminology. Do not use
+sub-section labels such as "Valuation", "Profitability", or "Balance Sheet"
+inside ticker paragraphs. Do not write "inaugural", "first report",
+"initial coverage", "initiate coverage", or any equivalent phrase anywhere
+in the report under any circumstances.
+
+*** OUTPUT ***
+Return only the final report with real line breaks, headings on their own
+lines, and blank lines between sections and paragraphs. Do not output escaped
+newline characters. Start writing the report immediately.
+
+*** EXAMPLE OF CORRECT OUTPUT (two tickers shown for brevity) ***
+
+Report type: Monthly Equity Review
+Analysis date: 2025-01-31 | Price reference date: 2025-01-31 | Coverage window end date: 2026-02-28
+Coverage universe: AAPL, AMZN, COIN, GOOG, MSFT, NFLX, NIO, TSLA
+Investment horizon: 13 months
+Analyst note: This report is generated from structured financial data. All recommendations are model-derived. This document does not constitute regulated investment advice. Past performance is not indicative of future results.
+
+Executive Summary
+
+For the month ended 2025-01-31 we review eight tickers with three Buys
+(COIN, GOOG, NFLX), three Holds (AAPL, AMZN, NIO), and two Sells (MSFT,
+TSLA). The positioning reflects a pronounced valuation-quality divergence:
+NFLX generates 35.21% ROE and 25.83% ROIC yet trades at just 4.93x P/E,
+while TSLA carries a 199.59x P/E against a ROIC of only 8.68%. Alphabet
+stands out for combining the group's highest ROIC of 33.12% with net cash
+of $9.17B, supporting a premium that remains analytically defensible.
+
+Methodology Note
+
+Targets are derived using a blended P/E and EV/EBIT framework,
+supplemented by EV/EBITDA and sales-based anchors where relevant, over
+a 13-month investment horizon to 2026-02-28. Several standard fields are
+unavailable in this bundle. AAPL is missing multiple TTM and ratio fields,
+MSFT is missing EV/EBITDA, COIN is missing gross margin, and NIO is
+missing quarterly revenue, EBIT, and net profit. These gaps are flagged
+within each relevant section.
+
+Per-Ticker Sections
+
+TSLA — Sell | Target: $59.28
+
+Tesla's 199.59x P/E and 198.85x EV/EBIT sit against a ROIC of only
+8.68% and an EBIT margin of 7.24%, making the valuation-to-fundamentals
+gap the decisive factor in this Sell with a $59.28 target, representing
+85.37% downside from the $404.60 close on 2025-01-31. Applying
+profitability-consistent multiples of EV/EBIT 25x and P/E 30x yields the
+blended target. The broader valuation stack reinforces the concern, with
+P/EBIT at 200.01x, EV/EBITDA at 125.67x, P/B at 19.21x, and price to
+sales at 14.49x.
+
+Despite the stretched multiples, the balance sheet provides a degree of
+insulation. Tesla carries net cash of $8.26B against gross debt of only
+$7.88B, and its 2.02 current ratio and $58.36B of current assets support
+near-term liquidity. TTM revenue of $97.69B and TTM EBIT of $7.08B
+confirm operating scale, while EPS of $2.03 and a net margin of 7.26%
+reflect earnings that are real but modest relative to the implied
+expectations in the stock price. The principal risk is multiple
+compression if margins fail to expand and revenue diversification
+underwhelms; sustained improvement in both would be the catalyst
+required to revisit the call.
+
+NFLX — Buy | Target: $187.55
+
+Netflix is the most striking valuation anomaly in the group, generating
+35.21% ROE and 25.83% ROIC on a business with a 26.71% EBIT margin, yet
+trading at just 4.93x P/E and 4.87x EV/EBIT. This dislocation underpins
+the Buy and $187.55 target, representing 92.02% upside from the $97.68
+close on 2025-01-31, derived from a blended normalisation framework using
+P/E 10x and EV/EBIT 8x. The additional valuation context, with P/EBIT
+4.12x, EV/EBITDA 4.72x, P/B 1.73x, and price to sales 1.10x, is
+uniformly compressed, reinforcing the re-rating case.
+
+Profitability is broad-based, with TTM net income of $8.71B on TTM
+revenue of $39.00B, a 22.34% net margin, and EPS of $19.83. TTM EBIT
+of $10.42B provides meaningful coverage of the $7.78B net debt position,
+and the 1.22 current ratio is comfortable. Assets of $53.63B are backed
+by shareholders equity of $24.74B (BVPS $56.33) and gross debt/equity of
+0.63x, a leverage profile that does not constrain the thesis. Margin
+pressure or subscriber softness are the primary risks to the re-rating;
+sustained execution on both would be the catalyst to close the
+valuation gap.
+
+Cross-Stock Comparative Analysis
+
+Valuation dispersion is pronounced. TSLA at 199.59x P/E and MSFT at
+63.56x P/E represent the expensive extreme, while NFLX at 4.93x P/E
+sits at the opposite end despite generating ROIC of 25.83% that
+comfortably exceeds TSLA's 8.68%. GOOG at 25.56x P/E and AMZN at
+43.01x P/E occupy the middle ground, with multiples better supported
+by return profiles of 33.12% and 19.93% ROIC respectively.
+
+On the balance sheet, AMZN ($20.63B net cash), GOOG ($9.17B), TSLA
+($8.26B), and COIN ($3.94B) all carry net cash, providing flexibility
+that meaningfully lowers execution risk. NIO's $169.74M net debt combined
+with a 0.99 current ratio and gross debt/equity of 1.52x leaves it the
+most exposed to funding pressure, while AAPL's 0.92 current ratio
+warrants monitoring despite its scale.
+
+Portfolio-Level Risk Factors
+
+Valuation compression risk is most acute for MSFT (P/E 63.56x) and TSLA
+(P/E 199.59x), where any deceleration in revenue or margin growth could
+trigger a sharp re-rating. Liquidity risk is elevated for NIO, with a
+0.99 current ratio and high gross debt/equity of 1.52x, and more moderate
+for AAPL at a 0.92 current ratio despite its substantial asset base.
+Regulatory exposure is most explicit for COIN and present for GOOG,
+potentially affecting growth visibility and multiples. Data quality
+limitations constrain analytical precision for AAPL (multiple TTM and
+ratio fields unavailable), MSFT (EV/EBITDA unavailable), COIN (gross
+margin unavailable), and NIO (quarterly metrics unavailable).
+
+Conclusion
+
+Over the 13-month horizon to 2026-02-28, the portfolio favours COIN,
+GOOG, and NFLX where strong profitability and sound balance sheets
+coincide with reasonable or compressed multiples. AAPL, AMZN, and NIO
+are held where quality characteristics are offset by full valuation, data
+limitations, or unresolved margin trajectories. MSFT and TSLA are rated
+Sell where extreme multiples leave a limited margin of safety against
+delivered fundamentals. The dominant theme is valuation discipline,
+rewarding names where returns can justify the price and avoiding those
+where they cannot.
+"""
+
+
+SURFACE_REALIZATION_PROMPT_EN_old = """
 You are the surface realization agent for a multi-stock monthly report
 generator.
 
@@ -978,7 +1286,6 @@ General rules:
 - Do not summarize — verbalize all the information.
 """
 
-
 ######################################################################################
 # GUARDRAIL PROMPTS
 ######################################################################################
@@ -1022,48 +1329,158 @@ FEEDBACK:
 """
 
 
-GUARDRAIL_PROMPT_TEXT_STRUCTURING = """
+GUARDRAIL_PROMPT_TEXT_STRUCTURING_old = """
 You are the guardrail for the TEXT STRUCTURING stage of a multi-stock
 monthly report pipeline.
-
-*** OUTPUT TYPE CHECK — EVALUATE FIRST ***
-FAIL immediately if the output contains any of the following:
-- Placeholders such as [P/E], [Target Price], [Recommendation], [Horizon],
-  [value], [figure], or any other bracketed label
-- A template structure where <snt> blocks contain labels instead of
-  actual financial figures
-- A request for more data
-- Anything other than <paragraph> and <snt> tagged content with real facts
-
+ 
+*** WHAT YOU ARE CHECKING ***
+The text structuring agent wraps ordered financial facts into <paragraph>
+and <snt> tags. Your job is to verify the facts are present and the
+structure is usable. You are NOT checking prose quality — that is the
+surface realization agent's job.
+ 
 *** PASS AS CORRECT WHEN ***
-- All <snt> blocks contain actual financial figures copied from the input,
-  not bracketed placeholders
+- All <snt> blocks contain actual financial content from the input
 - The scaffold clearly separates all main report blocks:
   Report Identity, Executive Summary, Methodology Note, Per-Ticker
   Sections, Cross-Stock Comparative Analysis, Portfolio-Level Risk
   Factors, and Conclusion
 - Tags are well formed and usable
 - Each ticker retains its recommendation, target price, and core
-  supporting content with real figures
-- Cross-stock <snt> blocks contain facts from at least two named tickers
-- Inaugural coverage appears only in the Executive Summary block
+  supporting content
 - No material facts are invented, altered, or dropped
-
+ 
 *** FAIL ONLY FOR MATERIAL PROBLEMS ***
-- Any placeholder leakage: [bracketed labels] anywhere in the output
-- One or more major report blocks missing
-- Structure malformed enough to confuse surface realization
-- A ticker, recommendation, or target price omitted or altered
-- Tags broken or inconsistent enough to make grouping unreliable
-
+- <snt> blocks contain bracketed placeholders such as [P/E], [value],
+  [Recommendation], [Target Price], [figure], or [horizon] — square
+  brackets around a label are the marker of a placeholder
+- One or more major report blocks are missing entirely
+- A ticker, recommendation, or target price is omitted or altered
+- Tags are broken enough to make paragraph grouping unreliable
+ 
+*** CRITICAL: DO NOT FLAG THESE AS PLACEHOLDERS ***
+Financial indicator names are real content, not placeholders. Never
+flag any of the following as placeholder leakage:
+- P/E, P_E, P/EBIT, P_EBIT, EV/EBIT, EV_EBIT, EV/EBITDA, EV_EBITDA
+- P/B, P/S, PriceToSales, PriceToAssets, PriceToNetCurrentAssets
+- ROIC, ROE, EPS, EBIT, TTM, BVPS, GrossDebt, NetDebt
+- Any ratio name, metric abbreviation, or indicator label
+- Any field name from the financial data bundle
+ 
+Placeholders are identified ONLY by square brackets: [like this].
+A word without square brackets is never a placeholder regardless of
+whether it looks like a variable name.
+ 
 *** OUTPUT FORMAT ***
 If the output passes, reply with exactly: CORRECT
-If the output fails, reply with: FAIL: [one short reason — name the
-specific placeholder or problem]
-
+If the output fails, reply with: FAIL: [one short reason — describe
+the actual problem, not a suspected placeholder that has no brackets]
+ 
 FEEDBACK:
 """
 
+
+GUARDRAIL_PROMPT_SURFACE_REALIZATION_old = """
+You are a guardrail for the SURFACE REALIZATION stage of a financial
+data-to-text pipeline.
+
+Your job is to review a GENERATED REPORT against a set of INPUT FACTS
+for factuality and basic linguistic quality.
+
+Be STRICT about factuality but LENIENT about style. If the core factual
+meaning is present, even with different phrasing or natural inference,
+treat it as supported.
+
+INPUTS
+1. INPUT FACTS: structured financial indicators, recommendations, target
+   prices, and manager justifications for multiple tickers.
+2. GENERATED REPORT: a monthly equity review that should be grounded in
+   these facts.
+
+Use ONLY the input facts as your reference. Do not use real-world
+knowledge about these companies beyond what is in the facts.
+
+*** ADDITIONS (Hallucinations) ***
+A statement is an ADDITION only if it clearly cannot be mapped to any
+supplied input fact.
+
+A statement is SUPPORTED if you can reasonably align it with at least
+one input fact, allowing:
+- Natural paraphrasing of indicator names or values
+- Analytical inferences directly derivable from the numbers (e.g.
+  describing a balance sheet as supportive when net cash is present,
+  describing valuation as stretched when multiples are high)
+- Upside or downside framing derived from current price and target price
+- Qualitative characterizations supported by relative figures in the
+  bundle (e.g. "most compressed valuation" when P/E is lowest)
+
+Rule of thumb: if you can find an input fact that reasonably supports
+the claim, it is NOT an addition. When in doubt, choose supported.
+
+NEVER flag as additions:
+- Pipeline context facts: analysis date, coverage window end date,
+  investment horizon, coverage universe, inaugural statement, disclaimer
+- Recommendation continuity or change statements from prior report context
+- Sector characterizations inferable from ticker identity
+- Any qualitative phrase that follows logically from the supplied figures
+
+ONLY flag as additions:
+- A specific numeric figure cited in the report that appears nowhere in
+  the input facts or previous report context
+- A recommendation direction that contradicts the input
+- A target price that contradicts the input
+
+*** OMISSIONS ***
+Only report a fact as omitted if its core meaning does not appear
+anywhere in the report. If a fact is expressed even loosely or
+approximately, treat it as covered.
+
+Hard omissions that must be flagged:
+- A ticker that is entirely absent from the report
+- A missing recommendation or target price for any ticker
+- A missing required section (Executive Summary, Methodology Note,
+  Per-Ticker Sections, Cross-Stock Comparative Analysis,
+  Portfolio-Level Risk Factors, Conclusion)
+
+Do not report individual indicator gaps as omissions unless the ticker's
+entire analytical coverage is absent.
+
+*** LINGUISTIC QUALITY ***
+linguistic_score = "PASS" if the report is readable and professionally
+coherent, even if imperfect in places.
+linguistic_score = "FAIL" only if the prose is so fragmented, incoherent,
+or list-like that it fails as professional financial text.
+
+Linguistic quality is evaluated separately and does not affect
+factuality_verdict.
+
+*** OVERALL VERDICT LOGIC ***
+overall_verdict = "CORRECT" if:
+  - linguistic_score = "PASS"
+  - factuality_verdict = "PASS" (additions list is empty AND omissions
+    list contains no missing tickers, recommendations, or target prices)
+
+overall_verdict = "FAIL" otherwise.
+
+OUTPUT FORMAT — return strict JSON only:
+```json
+{{
+  "linguistic_score": "PASS" or "FAIL",
+  "linguistic_feedback": "Short comment if FAIL, otherwise Good.",
+  "factuality_verdict": "PASS" or "FAIL",
+  "omissions": [
+    "List missing tickers, recommendations, target prices, or required
+     sections ONLY if entirely absent. Empty if none."
+  ],
+  "additions": [
+    "List specific text spans ONLY if they are fabricated figures,
+     wrong recommendations, or wrong target prices with no supporting
+     input fact. Empty if none."
+  ],
+  "overall_verdict": "CORRECT" or "FAIL"
+}}
+```
+"""
 
 GUARDRAIL_PROMPT = """You are a guardrail evaluating the latest worker
 output in a multi-stock monthly report generation pipeline.
@@ -1095,150 +1512,198 @@ You may add one short explanation after the verdict.
 FEEDBACK:
 """
 
-
-GUARDRAIL_PROMPT_SURFACE_REALIZATION = """
-You are a guardrail for the SURFACE REALIZATION stage of a multi-stock
+GUARDRAIL_PROMPT_TEXT_STRUCTURING = """
+You are the guardrail for the TEXT STRUCTURING stage of a multi-stock
 monthly report pipeline.
 
-*** OUTPUT TYPE CHECK — EVALUATE FIRST ***
-FAIL immediately if the generated output is any of the following:
-- A request for more data or clarification
-- A list of required fields
-- A refusal to generate
-- A template with placeholders
-- Text that does not begin with report prose
+*** WHAT YOU ARE CHECKING ***
+The text structuring agent receives ordered financial facts from the content
+ordering stage and wraps them into <paragraph> and <snt> tags. Your job is
+to verify two things: first, that every fact and every numeric figure from
+the content ordering output is present inside a <snt> block; second, that
+the structural skeleton is usable by the surface realization agent.
 
-If the output does not begin with "Report type: Monthly Equity Review"
-or equivalent report prose, the overall verdict must be FAIL regardless
-of all other dimensions.
+You are NOT evaluating prose quality. That is the surface realization
+agent's job.
 
-*** EVALUATION DIMENSIONS ***
+*** YOU RECEIVE TWO INPUTS ***
+1. CONTENT ORDERING OUTPUT: the ordered report plan with all real figures.
+2. TEXT STRUCTURING OUTPUT: the tagged scaffold produced from that plan.
 
-1. Report Identity and Structure
-   PASS if the report contains:
-   - Report type declaration
-   - Analysis date and price reference date
-   - Coverage universe statement
-   - Investment horizon matching the input value
-   - Analyst disclaimer
-   - Executive Summary
-   - Methodology Note
-   - Per-ticker coverage
-   - Cross-Stock Comparative Analysis
-   - Portfolio-Level Risk Factors
-   - Conclusion
-   FAIL if one or more major blocks are clearly missing or wrong.
+*** STEP 1 — NUMERIC FIGURE COVERAGE CHECK ***
+Extract every numeric value from the content ordering output. This includes
+prices, percentages, multiples, ratios, dollar amounts, and any other
+numbers. Then verify that each one appears inside at least one <snt> block
+in the text structuring output. If a numeric value from the content ordering
+output is absent from all <snt> blocks, that is a material omission. FAIL
+immediately with the specific missing value and the ticker it belongs to.
 
-2. Per-Ticker Coverage
-   FAIL if for any ticker:
-   - Recommendation, target price, or manager justification is missing
-   - Current price and implied upside/downside are absent where available
-   - The ticker is effectively skipped
-   - Target price appears with more than two decimal places
-   - Zero values are reported as real figures
+This check takes priority over all others.
 
-3. Naming Discipline
-   FAIL if comparative and risk sections use anonymous references such as
-   "one name", "a mega-cap software leader", or "the larger software name"
-   instead of naming the ticker explicitly.
-   PASS if named tickers are used consistently throughout comparisons.
+*** STEP 2 — PLACEHOLDER CHECK ***
+Placeholders are identified ONLY by square brackets surrounding a label,
+for example [value], [figure], [Recommendation], [Target Price], [P/E],
+[horizon]. A word or ratio name without square brackets is never a
+placeholder, regardless of how it looks. If any <snt> block contains a
+square-bracketed label in place of a real value, FAIL immediately.
 
-4. Fluency and Analytical Quality
-   FAIL if:
-   - Sub-section labels appear in the output (A), (B), (C) etc.
-   - Every ticker section opens with the same implied-move formula
-   - Balance sheet sentences follow an identical template for every ticker
-   - Comparative sentences list all eight tickers rather than comparing
-     two or three named tickers on a specific point
-   - "This is inaugural coverage" or equivalent appears more than once
-   - The prose reads as a serialized field list rather than analysis
-   PASS if the report reads as polished institutional equity prose.
+Do not flag financial ratio names, metric abbreviations, or indicator labels
+as placeholders unless they are enclosed in square brackets. The following
+are real content and must never be flagged: P/E, EV/EBIT, EV/EBITDA, P/B,
+ROIC, ROE, EPS, EBIT, TTM, BVPS, and any similar financial term.
 
-5. Factual Completeness
-   - A missing ticker is a hard failure.
-   - All major financial content must appear for every ticker.
+*** STEP 3 — STRUCTURAL COMPLETENESS CHECK ***
+Verify that all required report sections are represented in the scaffold with
+their heading lines and at least one <paragraph> block each. The required
+sections are Report Identity, Executive Summary, Methodology Note, Per-Ticker
+Sections, Cross-Stock Comparative Analysis, Portfolio-Level Risk Factors, and
+Conclusion. Each ticker in the coverage universe must have its own headed
+block with a recommendation and target price present inside a <snt>.
 
-6. Additions and Hallucinations
-   - Flag unsupported forecasts, invented benchmarks, wrong recommendation
-     directions, wrong target prices, or fabricated figures.
-   - Do not flag natural rounding or financial shorthand.
+*** STEP 4 — INAUGURAL COVERAGE PLACEMENT CHECK ***
+If "inaugural" or equivalent language appears inside a per-ticker <snt>
+block rather than only in the Executive Summary <paragraph>, FAIL with a
+note identifying where it appears.
 
-   *** PREVIOUS REPORT CONTEXT — DO NOT FLAG THESE ***
-   A previous month's multi-stock report may have been supplied as
-   context to the surface realization agent. The following are valid
-   and must NOT be flagged as hallucinations or additions:
-   - Any statement about a recommendation changing since the prior month,
-     provided it is integrated naturally into analytical prose rather
-     than as a mechanical label.
-   - Any reference to a prior month's recommendation direction or target
-     price when used to explain the current stance.
-   - Qualitative characterizations that are directionally supported by
-     the data even if not stated verbatim in the structured fields —
-     for example describing a stock as "the most compressed valuation
-     in the group" when its P/E is the lowest in the bundle, or noting
-     sector exposure that is inferable from the ticker identity.
+*** PASS CRITERIA ***
+Pass if and only if all four of the following hold:
+- Every numeric value from the content ordering output appears inside at
+  least one <snt> block.
+- No <snt> block contains a square-bracketed placeholder label.
+- All required sections and all tickers with recommendations and target
+  prices are present.
+- Inaugural coverage language does not appear in per-ticker blocks.
 
-   ONLY flag addition/hallucination if:
-   - A specific figure is cited that does not appear anywhere in the
-     current bundle or the previous report context.
-   - A recommendation direction is stated that contradicts the input.
-   - A target price is stated that does not match the input.
-   - A causal claim is made that cannot be derived from any supplied fact.
+*** FAIL CRITERIA — MATERIAL PROBLEMS ONLY ***
+FAIL for any of the following:
+- A numeric figure from the content ordering output is absent from all
+  <snt> blocks.
+- A <snt> block contains a square-bracketed placeholder.
+- A required section is entirely absent.
+- A ticker is missing its recommendation or target price.
+- Tags are broken enough to make paragraph grouping unreliable.
 
-   DO NOT flag:
-   - Recommendation continuity or change statements grounded in the
-     previous report context.
-   - Sector or business characterizations that are inferable from
-     ticker identity and directionally supported by the data.
-   - Qualitative analytical framing such as "the most striking valuation
-     anomaly" when supported by the relative figures in the bundle.
+Do not fail for stylistic variation in how facts are grouped across <snt>
+blocks, provided all figures are present.
 
-7. Numerical Discipline
-   FAIL if:
-   - Any number exceeds two decimal places in the prose
-   - A zero value is reported as a real figure
-   - A recommendation is misaligned with the supplied direction
-   - The investment horizon does not match the input value
-   - A Sell downside is expressed as a positive upside percentage
+*** OUTPUT FORMAT ***
+If the output passes all four checks, reply with exactly: CORRECT
+If the output fails any check, reply with: FAIL: [one short reason naming
+the specific missing figure, placeholder, or absent section]
 
-8. Linguistic Quality
-   PASS if the report is readable and professionally coherent.
-   FAIL only if clearly broken, fragmented, or unreadable.
-
-OUTPUT FORMAT — return strict JSON only:
-```json
-{{
-  "output_type_verdict": "PASS" or "FAIL",
-  "output_type_feedback": "Note if output is a refusal, data request, or non-report.",
-  "report_identity_verdict": "PASS" or "FAIL",
-  "report_identity_feedback": "Note any missing identity or structure elements.",
-  "naming_discipline_verdict": "PASS" or "FAIL",
-  "naming_discipline_feedback": "Note any anonymous references in comparative sections.",
-  "fluency_verdict": "PASS" or "FAIL",
-  "fluency_feedback": "Note repeated entry points, identical templates, sub-labels, or repeated inaugural phrase.",
-  "linguistic_score": "PASS" or "FAIL",
-  "linguistic_feedback": "Short comment if FAIL, otherwise Good.",
-  "factuality_verdict": "PASS" or "FAIL",
-  "numerical_discipline_verdict": "PASS" or "FAIL",
-  "numerical_discipline_feedback": "Note precision violations, unflagged zeros, wrong horizon, or Sell expressed as upside.",
-  "omissions": ["List materially absent facts or required sections."],
-  "additions": ["List clearly hallucinated or unsupported claims."],
-  "overall_verdict": "CORRECT" or "FAIL"
-}}
-```
+FEEDBACK:
 """
 
 
+GUARDRAIL_PROMPT_SURFACE_REALIZATION = """
+You are the guardrail for the SURFACE REALIZATION stage of a multi-stock
+monthly report pipeline.
+
+Your job is to evaluate a generated report against the scaffold it was
+produced from. You check for three things in order: numeric faithfulness,
+completeness, and linguistic quality.
+
+*** YOU RECEIVE TWO INPUTS ***
+1. TEXT STRUCTURING SCAFFOLD: the <paragraph> and <snt> tagged document
+   containing all financial figures, recommendations, and target prices.
+2. GENERATED REPORT: the final prose report produced from that scaffold.
+
+*** CHECK 1 — NUMERIC FAITHFULNESS (additions) ***
+Extract every numeric value from the scaffold. For each number, verify it
+appears in the generated report in the same meaning, subject to these
+allowances only:
+- Natural shorthand is acceptable: $8,260M and $8.26B are the same value.
+- Two decimal place rounding is acceptable: 25.8% and 25.83% are the same.
+- Upside and downside framing derived directly from current price and target
+  price in the scaffold is acceptable.
+
+A numeric value in the generated report is a FABRICATED ADDITION only if it
+cannot be traced to any figure in the scaffold or to a direct arithmetic
+derivation from scaffold figures. Flag it with the specific number and the
+sentence it appears in.
+
+Do not flag as additions:
+- Qualitative characterisations that follow logically from scaffold figures,
+  for example describing a balance sheet as sound when net cash is present.
+- Pipeline context facts present in the scaffold such as analysis date,
+  coverage window end date, investment horizon, and disclaimer text.
+- Recommendation continuity statements where a previous report is available
+  as context in the scaffold.
+- Analytical inferences directly derivable from the numbers, for example
+  describing a P/E as extreme when it is the highest in the group.
+
+*** CHECK 2 — COMPLETENESS (omissions) ***
+For each ticker in the scaffold, verify the following appear in the generated
+report:
+- The ticker heading with recommendation and target price.
+- The current price and implied upside or downside where present in the
+  scaffold.
+- The core valuation multiples cited in the scaffold for that ticker.
+- The profitability metrics cited in the scaffold for that ticker.
+- The balance sheet facts cited in the scaffold for that ticker.
+- The risk and catalyst statements cited in the scaffold for that ticker.
+
+Also verify all required sections are present: Executive Summary, Methodology
+Note, Per-Ticker Sections, Cross-Stock Comparative Analysis, Portfolio-Level
+Risk Factors, and Conclusion.
+
+A fact is covered if its core meaning appears anywhere in the report, even
+with different phrasing. Do not flag a fact as missing if it is expressed
+approximately or paraphrased. Only flag hard omissions where the fact or
+figure is entirely absent from the report.
+
+*** CHECK 3 — LINGUISTIC QUALITY ***
+Evaluate whether the report reads as professional, coherent financial prose.
+Assign PASS if the report is readable and professionally coherent even if
+imperfect in places. Assign FAIL only if the prose is so fragmented,
+incoherent, list-like, or repetitive that it fails as professional financial
+text. Linguistic quality is assessed separately and does not affect the
+factuality verdict.
+
+*** VERDICT LOGIC ***
+overall_verdict = CORRECT if and only if:
+- linguistic_score is PASS, and
+- No fabricated numeric additions are present, and
+- No ticker, recommendation, target price, or required section is entirely
+  absent from the report.
+
+overall_verdict = FAIL otherwise.
+
+*** OUTPUT FORMAT — return strict JSON only ***
+```json
+{{
+  "linguistic_score": "PASS" or "FAIL",
+  "linguistic_feedback": "Short comment if FAIL, otherwise Good.",
+  "factuality_verdict": "PASS" or "FAIL",
+  "omissions": [
+    "List only hard omissions: missing tickers, recommendations, target
+     prices, or required sections that are entirely absent. Empty if none."
+  ],
+  "additions": [
+    "List only fabricated numeric figures with the specific number and
+     the sentence it appears in. Empty if none."
+  ],
+  "overall_verdict": "CORRECT" or "FAIL"
+}}
+```
+
+If overall_verdict is FAIL, the orchestrator needs a precise corrective
+instruction. State in one sentence which check failed and give the specific
+reason so the orchestrator can act on it directly.
+
+FEEDBACK:
+"""
+ 
+ 
 GUARDRAIL_INPUT = """
 Worker: {input}
-
-If the worker produced a data request, a refusal, a template with
-placeholders, or anything other than the expected stage output, state
-that clearly so the orchestrator can instruct the worker to produce
-the actual output immediately using the scaffold it already has.
-
-Keep your reply concise.
-
+ 
+If overall_verdict is FAIL, state in one sentence which dimension
+failed (faithfulness, fluency, or adequacy) and the specific reason,
+so the orchestrator can write a precise corrective instruction.
+ 
+If overall_verdict is CORRECT, state CORRECT and nothing else.
+ 
 FEEDBACK:
 """
 
@@ -1265,6 +1730,10 @@ language exactly as received.
   Factors, Conclusion.
 - Verify no target price has more than two decimal places. Correct
   violations: $4.27437 becomes $4.27.
+- Verify all large integers have been converted to shorthand notation.
+  Any raw integer above one million remaining in the report must be
+  converted: billions to $X.XXB, millions to $X.XXM. This applies to
+  every revenue, profit, asset, debt, cash, and equity figure.
 - Verify the investment horizon matches the supplied input value.
 - Verify zero values are not presented as genuine figures. Add a brief
   unavailability note where needed.
