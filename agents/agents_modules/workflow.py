@@ -22,8 +22,13 @@ from agents.agent_prompts import (
     SURFACE_REALIZATION_PROMPT_EN,
     SURFACE_REALIZATION_PROMPT_GA,
 )
+from agents.agent_prompts_brazilian_manager import (
+    CONTENT_ORDERING_PROMPT_PT_BR,
+    TEXT_STRUCTURING_PROMPT_PT_BR,
+    SURFACE_REALIZATION_PROMPT_PT_BR,
+)
 
-LanguageCode = Literal["en", "ga"]
+LanguageCode = Literal["en", "ga", "pt_br"]
 
 # Default surface realization prompt used by legacy code
 SURFACE_REALIZATION_PROMPT = SURFACE_REALIZATION_PROMPT_EN
@@ -41,6 +46,12 @@ WORKER_ROLES_GA: Dict[str, str] = {
     "surface realization": SURFACE_REALIZATION_PROMPT_GA,
 }
 
+WORKER_ROLES_PT_BR: Dict[str, str] = {
+    "content ordering": CONTENT_ORDERING_PROMPT_PT_BR,
+    "text structuring": TEXT_STRUCTURING_PROMPT_PT_BR,
+    "surface realization": SURFACE_REALIZATION_PROMPT_PT_BR,
+}
+
 # Backwards compatible default
 WORKER_ROLES = WORKER_ROLES_EN
 EXPECTED_WORKER_ORDER: List[str] = [
@@ -53,12 +64,16 @@ EXPECTED_WORKER_ORDER: List[str] = [
 def get_worker_roles(language: LanguageCode) -> Dict[str, str]:
     if language == "ga":
         return WORKER_ROLES_GA
+    if language == "pt_br":
+        return WORKER_ROLES_PT_BR
     return WORKER_ROLES_EN
 
 
 def get_surface_prompt(language: LanguageCode) -> str:
     if language == "ga":
         return SURFACE_REALIZATION_PROMPT_GA
+    if language == "pt_br":
+        return SURFACE_REALIZATION_PROMPT_PT_BR
     return SURFACE_REALIZATION_PROMPT_EN
 
 

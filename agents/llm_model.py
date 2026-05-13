@@ -177,6 +177,22 @@ def extract_text_output(raw_output: Any) -> str:
     return str(raw_output).strip()
 
 
+def extract_aixplain_text_output(result: Any) -> str:
+    if hasattr(result, "data"):
+        data = result.data
+        if hasattr(data, "output"):
+            return str(data.output).strip()
+        if isinstance(data, dict):
+            for key in ("output", "text", "data", "result"):
+                if key in data:
+                    return extract_aixplain_text_output(data[key])
+    if isinstance(result, dict):
+        for key in ("output", "text", "data", "result"):
+            if key in result:
+                return extract_aixplain_text_output(result[key])
+    return extract_text_output(result)
+
+
 def model_label_from_config(conf: Dict[str, Any]) -> str:
     model_label = conf.get("model_name") or conf.get("model_id") or ""
     return str(model_label).strip()
@@ -287,18 +303,51 @@ class GroqModel(ModelBase):
         return self.llm
 
 # === aiXplain Model ===
+class AiXplainChain:
+    def __init__(self, llm: Any, agent_prompts: Optional[Text], temperature: float = 0.0):
+        self.llm = llm
+        self.agent_prompts = agent_prompts or ""
+        self.temperature = temperature
+
+    def invoke(self, inputs: Any):
+        if isinstance(inputs, dict):
+            user_input = inputs.get("input", "")
+        else:
+            user_input = inputs
+        text = str(user_input or "")
+        if self.agent_prompts:
+            text = f"{self.agent_prompts}\n\n{text}"
+
+        kwargs = {"text": text}
+        if self.temperature is not None:
+            kwargs["temperature"] = self.temperature
+        try:
+            result = self.llm.run(**kwargs)
+        except TypeError:
+            kwargs.pop("temperature", None)
+            result = self.llm.run(**kwargs)
+        return extract_aixplain_text_output(result)
+
+
 class AiXplainModel(ModelBase):
-    def __init__(self, model_id: str = "640b517694bf816d35a59125", temperature: float = 0.0, api_key: Optional[str] = None):
-        from aixplain.factories import ModelFactory
-        os.environ["TEAM_API_KEY"] = os.getenv("TEAM_API_KEY") or api_key
-        self.llm = ModelFactory.get(model_id)
-        self.temperature = temperature  # store if you need to use it in prompts
+    def __init__(
+        self,
+        model_id: str = "google/gemini-2.5-pro/google",
+        temperature: float = 0.0,
+        api_key: Optional[str] = None,
+    ):
+        from aixplain import Aixplain
+
+        aixplain_key = os.getenv("AIXPLAIN_API_KEY") or os.getenv("TEAM_API_KEY") or api_key
+        if not aixplain_key:
+            raise ValueError("AIXPLAIN_API_KEY or TEAM_API_KEY not found. Set it in .env or pass `api_key`.")
+        os.environ["TEAM_API_KEY"] = aixplain_key
+        self.client = Aixplain(aixplain_key)
+        self.llm = self.client.Model.get(model_id)
+        self.temperature = temperature
 
     def model_(self, agent_prompts: Optional[Text]) -> Dict:
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", agent_prompts), ("human", "{input}")
-        ])
-        return prompt | self.llm
+        return AiXplainChain(self.llm, agent_prompts, self.temperature)
 
     def raw_model(self):
         return self.llm
@@ -356,7 +405,10 @@ class UnifiedModel:
             self.model = HFModel(**kwargs)
 
         elif provider == "aixplain":
-            kwargs.setdefault("model_id", "640b517694bf816d35a59125")
+            kwargs.setdefault("api_key", os.getenv("AIXPLAIN_API_KEY") or os.getenv("TEAM_API_KEY"))
+            if not kwargs["api_key"]:
+                raise ValueError("AIXPLAIN_API_KEY or TEAM_API_KEY not found. Set it in .env or pass `api_key`.")
+            kwargs.setdefault("model_id", "google/gemini-2.5-pro/google")
             self.model = AiXplainModel(**kwargs)
 
         else:
@@ -375,7 +427,7 @@ model_name = {
     "anthropic": {"model_name": "claude-sonnet-4-5", "temperature": 0.0},
     "groq": {"model_name": "deepseek-r1-distill-llama-70b", "temperature": 0.0},
     "hf": {"model_name": "HuggingFaceH4/zephyr-7b-beta", "temperature": 0.0},
-    "aixplain": {"model_id": "640b517694bf816d35a59125", "temperature": 0.0},
+    "aixplain": {"model_id": "google/gemini-2.5-pro/google", "temperature": 0.0},
 }#.get(provider.lower())
 
 

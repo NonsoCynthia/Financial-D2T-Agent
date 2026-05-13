@@ -23,6 +23,7 @@ from agents.agent_prompts import (
     UNIFIED_WORKER_PROMPT_EN,
     UNIFIED_WORKER_PROMPT_GA,
 )
+from agents.agent_prompts_brazilian_manager import UNIFIED_WORKER_PROMPT_PT_BR
 from agents.utilities.agent_utils import apply_variable_substitution, _handle_parsing_errors
 from agents.utilities.token_tracker import token_tracking_callback
 
@@ -51,11 +52,13 @@ class UnifiedTaskWorker:
         model = UnifiedModel(provider=provider, **params).raw_model()
 
         # Choose unified prompt for language
-        base_prompt = (
-            UNIFIED_WORKER_PROMPT_GA
-            if language.lower() == "ga"
-            else UNIFIED_WORKER_PROMPT_EN
-        )
+        language_code = language.lower()
+        if language_code == "ga":
+            base_prompt = UNIFIED_WORKER_PROMPT_GA
+        elif language_code == "pt_br":
+            base_prompt = UNIFIED_WORKER_PROMPT_PT_BR
+        else:
+            base_prompt = UNIFIED_WORKER_PROMPT_EN
 
         tools: List[Any] = []
         if tools:

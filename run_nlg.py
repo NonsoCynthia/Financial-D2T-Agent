@@ -29,7 +29,7 @@ VALID_WORKFLOWS = (
     "no_guardrail_no_finalizer",
     "e2e",
 )
-VALID_LANGUAGES = ("en", "ga")
+VALID_LANGUAGES = ("en", "ga", "pt_br")
 VALID_PROVIDERS = ("openai", "ollama", "anthropic", "groq", "hf", "huggingface", "aixplain")
 VALID_DATASET_KINDS = ("auto", "financial_multi_stock_monthly")
 SOURCE_MODEL_HINTS = ("gpt-5", "gpt-5-mini")

@@ -19,6 +19,9 @@ from agents.agent_prompts import (
     END_TO_END_GENERATION_PROMPT_GA,
     input_prompt,
 )
+from agents.agent_prompts_brazilian_manager import (
+    END_TO_END_GENERATION_PROMPT_PT_BR,
+)
 from agents.agents_modules.workflow import (
     build_agent_workflow,
     build_agent_workflow_no_guardrail_no_finalizer,
@@ -27,7 +30,7 @@ from agents.agents_modules.workflow import (
     build_agent_workflow_unified,
 )
 
-Language = Literal["en", "ga"]
+Language = Literal["en", "ga", "pt_br"]
 WorkflowName = Literal[
     "default",
     "unified_worker",
@@ -540,6 +543,8 @@ class D2TAgentExperimentRunner:
         # Pick the correct end to end prompt based on language
         if self.language == "ga":
             system_prompt = END_TO_END_GENERATION_PROMPT_GA
+        elif self.language == "pt_br":
+            system_prompt = END_TO_END_GENERATION_PROMPT_PT_BR
         else:
             system_prompt = END_TO_END_GENERATION_PROMPT_EN
 
