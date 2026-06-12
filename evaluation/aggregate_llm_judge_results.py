@@ -21,6 +21,17 @@ SCORE_COLUMNS = [
     for dimension in judge.DIMENSION_NAMES
 ]
 ALL_JUDGES = list(judge.JUDGES)
+PUBLIC_RESULT_COLUMNS = [
+    "sample_name",
+    "analysis_date",
+    "judge",
+    "judge_label",
+    *SCORE_COLUMNS,
+    "mean_score",
+    "collection",
+    "source_reflection",
+    "workflow",
+]
 
 
 def result_condition(path: Path) -> tuple[str, bool | None, str]:
@@ -178,7 +189,7 @@ def main() -> None:
     )
 
     outputs = {
-        "all_judgments.csv": results,
+        "all_judgments.csv": results[PUBLIC_RESULT_COLUMNS],
         "completeness.csv": completeness,
         "summary_per_judge.csv": per_judge,
         "complete_case_ensemble.csv": ensemble,

@@ -32,8 +32,9 @@ from typing import Any
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).parent
-sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "pipeline"))
+sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
 
 # ---------------------------------------------------------------------------
 # Conditions

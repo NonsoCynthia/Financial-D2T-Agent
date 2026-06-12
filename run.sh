@@ -82,7 +82,7 @@ USAGE
 # Full CLI parsing and defaults live in `run_pipeline.py`.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER_PY="${PROJECT_ROOT}/run_pipeline.py"
+RUNNER_PY="${PROJECT_ROOT}/pipeline/run_pipeline.py"
 CONDA_ENV_NAME="${CONDA_ENV:-finance}"
 CONDA_BIN="${CONDA_BIN:-/home/chinonso/anaconda3/bin/conda}"
 

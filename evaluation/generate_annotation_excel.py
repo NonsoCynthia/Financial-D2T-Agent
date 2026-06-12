@@ -39,7 +39,7 @@ from openpyxl.utils import get_column_letter
 # Paths and sampling configuration
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_ROOT = PROJECT_ROOT / "results"
 HUMAN_EVAL_DIR = RESULTS_ROOT / "validation" / "human_eval_multi_model_robustness"
 OUTPUT_EXCEL = HUMAN_EVAL_DIR / "human_evaluation_annotation.xlsx"

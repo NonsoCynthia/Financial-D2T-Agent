@@ -112,7 +112,7 @@ HELP
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-RUNNER_PY="${PROJECT_ROOT}/run_nlg_brazilian_manager.py"
+RUNNER_PY="${PROJECT_ROOT}/pipeline/run_nlg_brazilian_manager.py"
 ARGS=()
 
 for arg in "$@"; do
@@ -138,7 +138,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${PROJECT_ROOT}/pipeline:${PROJECT_ROOT}/evaluation:${PROJECT_ROOT}:${PYTHONPATH:-}"
 cd "${PROJECT_ROOT}"
 
 exec "${PYTHON_BIN}" "${RUNNER_PY}" "${ARGS[@]}"

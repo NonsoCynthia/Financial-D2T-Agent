@@ -1,139 +1,174 @@
 # Financial-D2T-Agent
 
-Thiago style monthly fundamental-analysis workflow for US equities.
+A multi-agent data-to-text (D2T) system for generating professional monthly equity research reports from structured financial data. Built as part of PhD research on multi-agent NLG architectures, supporting English (US) and Brazilian Portuguese output.
 
-## Quick start
+---
 
-1) Build the daily panel
+## Project Structure
 
-- scripts/01_download_prices.py
-- scripts/04a_compute_returns.py
-- scripts/02_sec_ticker_cik.py
-- scripts/03a_sec_companyfacts.py
-- scripts/04b_align_fundamentals.py
-
-2) Build the monthly panel used by the agents
-
-- scripts/06_make_monthly_panel.py
-
-3) Run the monthly multi-agent workflow
-
-- python run_monthly_experiment.py
-
-4) Evaluate indicator accuracy and Thiago style trading simulation
-
-- python run_eval_monthly.py
-
-## Monthly agent run and evaluation (current pipeline)
-
-Run monthly agent outputs (one final file per ticker plus Thiago-style step artifacts):
-
-```bash
-python agent_monthly.py \
-  --tickers "TSLA,AMZN,NIO,MSFT,AAPL,GOOG,NFLX,COIN" \
-  --max_months 12 \
-  --model gpt-4.1-mini \
-  --test_start 2025-01-02 \
-  --test_end 2025-12-31 \
-  --server_path finAgents/server_us_finance.py \
-  --out_dir results/experiments/monthly_agent_workflow
+```
+Financial-D2T-Agent/
+├── run.sh                  # Upstream stock analysis pipeline
+├── run_nlg.sh              # English NLG generation (all workflow variants)
+├── run_nlg_br.sh           # Brazilian Portuguese NLG generation
+├── run_llm_as_judge.sh     # LLM-as-judge evaluation and paper result generation
+│
+├── pipeline/               # Core NLG generation scripts
+│   ├── config.py           # Tickers, dates, model config
+│   ├── load_data.py        # US data loading and prompt context builder
+│   ├── load_data_brazilian_manager.py
+│   ├── main.py             # Multi-agent graph definition (LangGraph)
+│   ├── run_pipeline.py     # Upstream stock analysis entry point
+│   ├── run_nlg.py          # English NLG entry point
+│   └── run_nlg_brazilian_manager.py
+│
+├── evaluation/             # LLM-judge evaluation and paper result generation
+│   ├── run_multimodel_judge.py         # GPT-5 / Gemini 2.5 Pro / Claude Haiku judge runner
+│   ├── run_human_eval.py               # Human evaluation runner
+│   ├── generate_annotation_excel.py    # Human evaluation workbook builder
+│   ├── aggregate_llm_judge_results.py  # Aggregates cached judge JSON → DataFrames
+│   ├── analyze_default_e2e_correlations.py
+│   ├── analyze_llm_judge_correlations.py
+│   ├── generate_paper_style_metrics_csv.py          # English (reflection=True) + BR paper CSVs
+│   ├── generate_workflow_true_five_system_metrics_csv.py  # 5-system ablation paper CSV
+│   └── LLM_JUDGE_CORRELATION_METHOD.md
+│
+├── agents/                 # Agent definitions, prompts, LangGraph workflow
+├── scripts/                # US data extraction scripts
+├── scripts_eu/             # EU data extraction scripts
+├── data/                   # US source data
+├── data_br/                # Brazilian Portuguese source data
+├── data_eu/                # EU source data
+├── results/                # All generated outputs and evaluation results
+│   └── validation/llm_judge_multimodel/paper_results/
+│       ├── paper_style_default_e2e_reflection_true_metrics.csv
+│       ├── paper_style_workflow_true_five_system_metrics.csv
+│       └── paper_style_default_e2e_br_metrics.csv
+├── notebooks/              # Exploratory notebooks
+├── statistics/             # Token and data statistics CSVs
+├── docs/                   # Detailed project documentation (project.md)
+└── mcp/                    # MCP server definitions
 ```
 
-Notes:
-- Reflection is enabled by default. Use `--no_reflection` to disable it.
+---
 
-Expected output structure:
+## Shell Scripts
 
-- `results/experiments/monthly_agent_workflow/<TICKER>_output_<timestamp>.json`
-- `results/experiments/monthly_agent_workflow/<TICKER>/<YYYY-MM-DD>_analyst_0.json`
-- `results/experiments/monthly_agent_workflow/<TICKER>/<YYYY-MM-DD>_manager_0.json`
-- `results/experiments/monthly_agent_workflow/results_sample.json`
-- `results/experiments/monthly_agent_workflow/decisions_sample.json`
+All four scripts must be run from the project root directory. They automatically set `PYTHONPATH` to include the `pipeline/` and `evaluation/` subdirectories.
 
-Evaluate in agent mode:
+### `run.sh` — Upstream Stock Analysis
+
+Runs the financial data extraction and upstream analysis pipeline (price data, SEC fundamentals, signal computation).
 
 ```bash
-# Thiago-style Stage 1 (default): min-max on gold + MAE
-python run_eval_monthly.py \
-  --mode agent \
-  --pred_dir results/experiments/monthly_agent_workflow \
-  --gold_csv data/processed/panel/monthly_panel_prices_returns_fundamentals.csv \
-  --stage1 thiago
-
-# Alternative Stage 1: NMAE + penalty
-python run_eval_monthly.py \
-  --mode agent \
-  --pred_dir results/experiments/monthly_agent_workflow \
-  --gold_csv data/processed/panel/monthly_panel_prices_returns_fundamentals.csv \
-  --stage1 nmae
+./run.sh
+# With a specific conda environment:
+CONDA_ENV=myenv ./run.sh
 ```
 
-## Data sources in this repository (US pipeline)
+### `run_nlg.sh` — English NLG Generation
 
-This document lists the data sources you currently use, what each one provides, and where you store it.
+Generates monthly equity reports in English for a given workflow variant and source model.
 
-## 1) Market price data (OHLCV)
-Source: Yahoo Finance via yfinance (scripts/01_download_prices.py)
-Provides: Daily Open, High, Low, Close, Adj Close, Volume for each ticker (TSLA, AMZN, NIO, MSFT, AAPL, GOOG, NFLX, COIN) across your configured date range.
-Stored as:
-- CSV per ticker under data/raw/prices/ (if enabled in your scripts)
-- SQLite database data/raw/prices_us.db, table US_PRICES
+```bash
+# List available samples
+./run_nlg.sh --list-samples --source-model gpt-5-mini
 
-## 2) Return series derived from prices
-Source: Computed locally from Yahoo Finance prices (scripts/04a_compute_returns.py)
-Provides: Daily return fields such as RET_1D and LOG_RET_1D (plus aligned adjusted close where applicable).
-Stored as:
-- CSV data/processed/prices/daily_returns.csv
-- SQLite database data/raw/prices_us.db, table US_RETURNS
+# Run a single sample
+./run_nlg.sh --workflow default --source-model gpt-5-mini --sample-id 3 --source-reflection
 
-## 3) SEC ticker to CIK mapping
-Source: SEC published mapping (scripts/02_sec_ticker_cik.py)
-Provides: Ticker to CIK mapping used to query SEC endpoints.
-Stored as:
-- CSV data/raw/sec/sec_ticker_cik_all.csv
-- CSV data/raw/sec/sec_ticker_cik_selected.csv
+# Run all samples sequentially
+./run_nlg.sh --workflow default --source-model gpt-5-mini --sequence
 
-## 4) SEC CompanyFacts fundamentals (XBRL facts)
-Source: SEC EDGAR CompanyFacts JSON endpoint (scripts/03a_sec_companyfacts.py)
-Provides: XBRL facts and metadata, including concepts such as:
-- Assets, Liabilities, StockholdersEquity
-- Revenues, NetIncomeLoss, OperatingIncomeLoss
-- EarningsPerShareBasic, CommonStockSharesOutstanding
-Plus fields like form (10-K, 10-Q), fiscal year, fiscal period, end date, filed date, accession number, unit, and frame where available.
-Stored as:
-- CSV data/raw/sec/companyfacts/companyfacts_2022_2025.csv
-- SQLite database data/raw/sec/sec_companyfacts.db, table SEC_COMPANYFACTS
+# Key flags:
+#   --workflow         default | e2e | default_old | no_orchestrator_no_finalizer |
+#                      no_guardrail_no_finalizer | no_orchestrator_no_guardrail_no_finalizer
+#   --source-model     upstream model folder (e.g. gpt-5-mini, gpt-5)
+#   --source-reflection / --source-no-reflection
+#   --sequence         run all samples one after another (no parallelism)
+#   --python PATH      specify Python interpreter
+```
 
-## 5) Merged daily panel (prices + returns + fundamentals aligned)
-Source: Built locally by aligning the latest filed fundamentals to each trading day (scripts/04b_align_fundamentals.py)
-Provides: Per day per ticker:
-- Price and return fields
-- Fundamentals carried forward using the latest filed data on or before each trading day
-Stored as:
-- CSV data/processed/panel/daily_panel_prices_returns_fundamentals.csv
-- CSV data/processed/panel/fundamentals_wide_by_filed.csv
-- SQLite database data/processed/panel/panel.db, tables US_DAILY_PANEL and US_FUNDAMENTALS_WIDE_BY_FILED
+### `run_nlg_br.sh` — Brazilian Portuguese NLG Generation
 
-## 6) Train and test splits
-Source: Built locally (scripts/05_make_splits.py)
-Provides: Train and test split files by date ranges.
-Stored as:
-- CSV data/processed/splits/train_2022_2024.csv
-- CSV data/processed/splits/test_2025.csv
+Generates monthly equity reports in Brazilian Portuguese using the manager-only workflow.
 
-## 7) Agent runtime inputs via MCP tools
-These are not new data sources. They are tool wrappers over your stored artefacts.
+```bash
+# Run all Brazilian Portuguese samples
+./run_nlg_br.sh --workflow default
 
-MCP server: finAgents/server_us_finance.py
-Reads from:
-- data/raw/prices_us.db (prices and returns)
-- data/raw/sec/sec_companyfacts.db (SEC fundamentals)
-- data/processed/panel/panel.db (merged panel)
+# With a specific dataset path:
+./run_nlg_br.sh --workflow default --dataset-path data_br/my_dataset
+```
 
-Tools exposed:
-- list_tickers
-- get_prices
-- get_returns
-- get_companyfacts
-- get_panel
-- get_price_series (minimal series, if enabled)
+### `run_llm_as_judge.sh` — LLM-as-Judge Evaluation
+
+Runs three LLM judges (GPT-5, Gemini 2.5 Pro, Claude Haiku 4.5) over generated reports, and generates paper-ready result CSVs.
+
+```bash
+# Run the judge on specific conditions
+./run_llm_as_judge.sh --collection nlg --source-reflection true --workflow default --workflow e2e
+
+# Run on all workflows across all samples
+./run_llm_as_judge.sh --collection nlg --source-reflection true
+
+# Brazilian Portuguese
+./run_llm_as_judge.sh --collection nlg_brazilian_manager
+
+# Generate paper CSVs from cached judge results (no new judging)
+./run_llm_as_judge.sh --aggregate-only       # English (reflection=True) + Brazilian Portuguese
+./run_llm_as_judge.sh --workflow-true-analysis  # 5-system ablation
+
+# List available files without running
+./run_llm_as_judge.sh --list-files --collection nlg --source-reflection true
+
+# Key flags:
+#   --collection          nlg | nlg_brazilian_manager
+#   --source-reflection   true | false | all
+#   --workflow            one or more workflow names
+#   --analysis-date       YYYY-MM-DD (filter to a specific report date)
+#   --aggregate-only      skip judging, regenerate paper CSVs only
+#   --workflow-true-analysis  skip judging, regenerate 5-system ablation CSV only
+```
+
+---
+
+## Paper Result CSVs
+
+Located in `results/validation/llm_judge_multimodel/paper_results/`:
+
+| File | Content | Research Question |
+|---|---|---|
+| `paper_style_default_e2e_reflection_true_metrics.csv` | English default vs e2e, source_reflection=True | RQ2 |
+| `paper_style_workflow_true_five_system_metrics.csv` | 5-system ablation, English, source_reflection=True | RQ3 |
+| `paper_style_default_e2e_br_metrics.csv` | Brazilian Portuguese default vs e2e | RQ2/RQ4 |
+
+Each file contains three metric types:
+- `system_ranking` — ensemble mean, SD, Wilcoxon p-value, CLD group letter per system
+- `iaa_item_pearson` — pairwise inter-judge Pearson r across report items
+- `iaa_system_pearson` — pairwise inter-judge Pearson r across system means
+
+The 5-system file additionally contains:
+- `system_pairwise_wilcoxon` — all 10 pairwise Wilcoxon tests with Holm-Bonferroni correction
+
+---
+
+## Requirements
+
+```bash
+pip install -r requirements.txt
+```
+
+A `.env` file in the home directory or project root is required for API keys:
+```
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GOOGLE_API_KEY=...
+```
+
+---
+
+## Further Documentation
+
+- [`docs/project.md`](docs/project.md) — full architecture, data flow, prompt design, CLI reference
+- [`evaluation/LLM_JUDGE_CORRELATION_METHOD.md`](evaluation/LLM_JUDGE_CORRELATION_METHOD.md) — inter-judge agreement methodology

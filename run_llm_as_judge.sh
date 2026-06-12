@@ -45,8 +45,10 @@ COMMON OPTIONS
   --fresh-gpt5                  Re-run GPT-5 instead of loading existing GPT-5
                                 judge results from results/validation/llm_judge.
   --max-retries N               Retry attempts per judge/sample.
-  --aggregate-only              Rebuild paper tables from cached judge JSONs.
+  --aggregate-only              Rebuild the sanitized paper metrics CSV.
                                 Does not call any LLM API.
+  --correlation-analysis        Alias for --aggregate-only.
+  --workflow-true-analysis      Build the separate English five-system table.
   --python PATH                 Python interpreter to use.
                                 Default: python
 
@@ -76,11 +78,17 @@ EXAMPLES
   # Run only Claude Haiku on default and e2e
   ./run_llm_as_judge.sh --judge claude_haiku_45 --workflow default --workflow e2e
 
-  # Use the finance conda environment interpreter directly
-  ./run_llm_as_judge.sh --python /home/chinonso/anaconda3/envs/finance/bin/python --list-files
+  # Use a virtual-environment interpreter directly
+  ./run_llm_as_judge.sh --python .venv/bin/python --list-files
 
   # Recompute paper-ready tables from all cached judgments
   ./run_llm_as_judge.sh --aggregate-only
+
+  # Generate the sanitized paper metrics CSV
+  ./run_llm_as_judge.sh --correlation-analysis
+
+  # Analyse five English workflow_True systems in a separate table
+  ./run_llm_as_judge.sh --workflow-true-analysis
 
   # Complete every missing judgment without replacing existing files
   ./run_llm_as_judge.sh --missing-only --collection all
@@ -98,9 +106,11 @@ HELP
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-RUNNER_PY="${PROJECT_ROOT}/run_multimodel_judge.py"
+RUNNER_PY="${PROJECT_ROOT}/evaluation/run_multimodel_judge.py"
 ARGS=()
 AGGREGATE_ONLY=false
+CORRELATION_ANALYSIS=false
+WORKFLOW_TRUE_ANALYSIS=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -122,6 +132,14 @@ while [[ $# -gt 0 ]]; do
       AGGREGATE_ONLY=true
       shift
       ;;
+    --correlation-analysis)
+      CORRELATION_ANALYSIS=true
+      shift
+      ;;
+    --workflow-true-analysis)
+      WORKFLOW_TRUE_ANALYSIS=true
+      shift
+      ;;
     *)
       ARGS+=("$1")
       shift
@@ -129,15 +147,41 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${PROJECT_ROOT}/pipeline:${PROJECT_ROOT}/evaluation:${PROJECT_ROOT}:${PYTHONPATH:-}"
 cd "${PROJECT_ROOT}"
+
+analysis_mode_count=0
+[[ "${AGGREGATE_ONLY}" == true ]] && ((analysis_mode_count += 1))
+[[ "${CORRELATION_ANALYSIS}" == true ]] && ((analysis_mode_count += 1))
+[[ "${WORKFLOW_TRUE_ANALYSIS}" == true ]] && ((analysis_mode_count += 1))
+if (( analysis_mode_count > 1 )); then
+  echo "Analysis options are mutually exclusive" >&2
+  exit 2
+fi
 
 if [[ "${AGGREGATE_ONLY}" == true ]]; then
   if [[ ${#ARGS[@]} -gt 0 ]]; then
     echo "--aggregate-only cannot be combined with judge-run options" >&2
     exit 2
   fi
-  exec "${PYTHON_BIN}" "${PROJECT_ROOT}/aggregate_llm_judge_results.py"
+  exec "${PYTHON_BIN}" "${PROJECT_ROOT}/evaluation/generate_paper_style_metrics_csv.py"
+fi
+
+if [[ "${CORRELATION_ANALYSIS}" == true ]]; then
+  if [[ ${#ARGS[@]} -gt 0 ]]; then
+    echo "--correlation-analysis cannot be combined with judge-run options" >&2
+    exit 2
+  fi
+  exec "${PYTHON_BIN}" "${PROJECT_ROOT}/evaluation/generate_paper_style_metrics_csv.py"
+fi
+
+if [[ "${WORKFLOW_TRUE_ANALYSIS}" == true ]]; then
+  if [[ ${#ARGS[@]} -gt 0 ]]; then
+    echo "--workflow-true-analysis cannot be combined with judge-run options" >&2
+    exit 2
+  fi
+  exec "${PYTHON_BIN}" \
+    "${PROJECT_ROOT}/evaluation/generate_workflow_true_five_system_metrics_csv.py"
 fi
 
 exec "${PYTHON_BIN}" "${RUNNER_PY}" "${ARGS[@]}"
@@ -185,16 +229,13 @@ exec "${PYTHON_BIN}" "${RUNNER_PY}" "${ARGS[@]}"
 # Regenerate all judgments from the APIs without computing summaries:
 # ./run_llm_as_judge.sh --collection all --fresh-gpt5 --overwrite --skip-summaries
 #
+# Generate the sanitized paper metrics CSV:
+# ./run_llm_as_judge.sh --correlation-analysis
+#
+# Generate the separate English workflow_True five-system table:
+# ./run_llm_as_judge.sh --workflow-true-analysis
+#
 # Current output roots:
 # results/validation/llm_judge_multimodel/<judge>/workflow_True/openai/gpt-5/en/<workflow>/
 # results/validation/llm_judge_multimodel/<judge>/workflow_False/openai/gpt-5/en/<workflow>/
 # results/validation/llm_judge_multimodel/<judge>/nlg_brazilian_manager/pt_br/<workflow>/
-
-# ./run_llm_as_judge.sh --aggregate-only
-
-# rm Financial-D2T-Agent/llm-as-judge.ipynb
-# rm Financial-D2T-Agent/llm-as-judge-multi-model-robustness.ipynb
-# rm Financial-D2T-Agent/new_llm-as-judge-multi-model-robustness.ipynb
-# rm Financial-D2T-Agent/newer_llm_as_judge.ipynb
-# rm -rf Financial-D2T-Agent/results/validation/llm_judge_old
-# rm -rf Financial-D2T-Agent/results/validation/llm_judge_multi_model

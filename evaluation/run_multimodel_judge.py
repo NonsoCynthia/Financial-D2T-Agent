@@ -12,7 +12,7 @@ Outputs:
   results/validation/llm_judge_multimodel/paired_ttests.csv      — paired t-tests
 
 Usage:
-  /home/chinonso/anaconda3/bin/python3 run_multimodel_judge.py
+  python run_multimodel_judge.py
 """
 
 from __future__ import annotations
@@ -35,8 +35,9 @@ from scipy import stats
 load_dotenv(Path.home() / ".env")
 load_dotenv()
 
-PROJECT_ROOT = Path(__file__).parent
-sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "pipeline"))
+sys.path.insert(0, str(PROJECT_ROOT / "evaluation"))
 
 from load_data import build_multi_stock_prompt_context, load_generation_samples
 
@@ -124,6 +125,22 @@ class JudgeScorecard(BaseModel):
     grammaticality: DimensionScore = Field(alias="Grammaticality")
     coherence:     DimensionScore = Field(alias="Coherence")
     fluency:       DimensionScore = Field(alias="Fluency")
+
+
+def sanitize_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Return the minimal cached record needed for reproducible statistics."""
+    scores = {}
+    for dimension in DIMENSION_NAMES:
+        value = result["scores"][dimension]
+        score = value["Score"] if isinstance(value, dict) else value
+        scores[dimension] = {"Score": int(score)}
+    return {
+        "sample_name": result["sample_name"],
+        "analysis_date": result["analysis_date"],
+        "judge": result["judge"],
+        "judge_label": result["judge_label"],
+        "scores": scores,
+    }
 
 # ---------------------------------------------------------------------------
 # Judge instructions (from llm-as-judge.ipynb)
@@ -740,8 +757,12 @@ def judge_one(
                 "attempt":        attempt,
                 "scores":         scorecard.model_dump(by_alias=True),
             }
-            out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-            return result
+            sanitized = sanitize_result(result)
+            out_path.write_text(
+                json.dumps(sanitized, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return sanitized
 
         except Exception as exc:
             last_err = exc
@@ -873,7 +894,10 @@ def run_condition(
                 for r in existing:
                     p = out_dir / f"{safe_slug(r['sample_name'])}.json"
                     if not p.exists() or OVERWRITE:
-                        p.write_text(json.dumps(r, ensure_ascii=False, indent=2), encoding="utf-8")
+                        p.write_text(
+                            json.dumps(sanitize_result(r), ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
                 print(f"    Loaded {len(existing)} existing results")
                 all_rows.extend(flatten(r) for r in existing)
                 continue

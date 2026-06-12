@@ -147,7 +147,7 @@ HELP
 # ---------------------------------------------------------------------------
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"     # override with: ./run_nlg.sh --python python3 ...
-RUNNER_PY="${PROJECT_ROOT}/run_nlg.py"  # the Python entry point this script wraps
+RUNNER_PY="${PROJECT_ROOT}/pipeline/run_nlg.py"  # the Python entry point this script wraps
 ARGS=()
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ done
 # Run the NLG pipeline
 # ---------------------------------------------------------------------------
 # Ensure the project root is on PYTHONPATH so imports resolve correctly
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="${PROJECT_ROOT}/pipeline:${PROJECT_ROOT}/evaluation:${PROJECT_ROOT}:${PYTHONPATH:-}"
 cd "${PROJECT_ROOT}"
 
 # Hand off to the Python runner with all collected arguments
